@@ -1,0 +1,21 @@
+name = "lovable-clone-backend"
+main = "src/index.ts"
+compatibility_date = "2024-03-20"
+
+# R2 bucket for storing projects/files
+[[r2_buckets]]
+binding = "R2_PROJECTS"
+bucket_name = "lovable-projects"
+
+# KV store for user data and credits
+[[kv_namespaces]]
+binding = "KV_METADATA"
+id = "local_dev_kv_placeholder_id"
+
+[vars]
+ENVIRONMENT = "development"
+
+# Secrets (loaded from .dev.vars for local dev)
+# CLERK_SECRET_KEY
+# OPENROUTER_API_KEY
+# FAL_KEY

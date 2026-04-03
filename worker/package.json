@@ -1,0 +1,30 @@
+{
+  "name": "worker",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.64",
+    "@ai-sdk/deepseek": "^2.0.26",
+    "@ai-sdk/google": "^3.0.53",
+    "@ai-sdk/openai": "^3.0.48",
+    "@cloudflare/workerd-linux-64": "^1.20260403.1",
+    "ai": "^6.0.141",
+    "fflate": "^0.8.2",
+    "hono": "^4.12.9",
+    "jose": "^6.2.2",
+    "nanoid": "^5.1.7",
+    "svix": "^1.89.0"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260317.1",
+    "typescript": "^6.0.2",
+    "wrangler": "^4.78.0"
+  }
+}
