@@ -19,3 +19,8 @@ ENVIRONMENT = "development"
 # CLERK_SECRET_KEY
 # OPENROUTER_API_KEY
 # FAL_KEY
+
+# Local dev: pin port to avoid collision with other services
+[dev]
+port = 8788
+
