@@ -46,8 +46,16 @@ chatRouter.post("/:projectId", async (c) => {
       baseURL: "https://openrouter.ai/api/v1",
     });
 
-    // Model ID comes directly from frontend
-    const aiModel = openrouter(model);
+    // If user attached an image, force a vision-capable model
+    const VISION_MODEL = "openai/gpt-4.1";
+    const effectiveModel = imageBase64 ? VISION_MODEL : model;
+    
+    if (imageBase64 && model !== VISION_MODEL) {
+      console.log(`Image attached — auto-switching from ${model} to ${VISION_MODEL} for vision support`);
+    }
+
+    // Model ID comes from frontend (or auto-switched for vision)
+    const aiModel = openrouter(effectiveModel);
 
     // 5. Detect first prompt vs iteration
     const hasExistingFiles = contextFiles && Object.keys(contextFiles).length > 0;
@@ -79,8 +87,10 @@ chatRouter.post("/:projectId", async (c) => {
       try {
         const userContent: any[] = [{ type: "text", text: prompt }];
         if (imageBase64) {
+          // AI SDK v6 rejects data: URLs (only accepts http/https or binary). Decode base64 to Uint8Array.
           const base64Data = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
-          userContent.push({ type: "image", image: base64Data });
+          const binary = Uint8Array.from(atob(base64Data), (ch) => ch.charCodeAt(0));
+          userContent.push({ type: "image", image: binary });
         }
 
         const result = await streamText({
