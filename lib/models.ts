@@ -161,4 +161,4 @@ export const AI_MODELS: AIModel[] = [
 ];
 
 export const DEFAULT_MODEL = "moonshotai/kimi-k2.6";
-export const VISION_MODEL = "anthropic/claude-sonnet-4.6";
+export const VISION_MODEL = "openai/gpt-4.1";

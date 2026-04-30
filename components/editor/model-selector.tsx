@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, ChevronDown, Sparkles } from "lucide-react";
+import { Check, ChevronDown, Sparkles, Eye } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   DropdownMenu,
@@ -45,9 +45,14 @@ export function ModelSelector({ selectedModel, onModelChange, disabled }: ModelS
             className="flex flex-col items-start gap-1 p-2 focus:bg-white/10 focus:text-white cursor-pointer rounded-md relative"
           >
             <div className="flex justify-between items-center w-full">
-              <span className="font-medium text-sm text-white">
-                {model.name}
-              </span>
+              <div className="flex items-center gap-1.5">
+                <span className="font-medium text-sm text-white">
+                  {model.name}
+                </span>
+                {model.vision && (
+                  <Eye className="w-3 h-3 text-blue-400" />
+                )}
+              </div>
               {selectedModel === model.id && (
                 <Check className="w-4 h-4 text-primary" />
               )}

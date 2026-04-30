@@ -10,6 +10,7 @@ import {
   SandpackPreview,
 } from "@codesandbox/sandpack-react";
 import { atomDark } from "@codesandbox/sandpack-themes";
+import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
 
 interface PreviewPanelProps {
   files: Record<string, string>;
@@ -99,15 +100,22 @@ function sanitizeIcons(code: string): string {
     localDeclarations.add(declMatch[1]);
   }
 
-  // Collect all names imported from ANY module
+  // Collect all names imported from ANY module (named + default imports)
   const allImportedNames = new Set<string>();
-  const importRegex = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g;
+  // Named imports: import { Foo, Bar } from '...'
+  const namedImportRegex = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g;
   let impMatch;
-  while ((impMatch = importRegex.exec(code)) !== null) {
+  while ((impMatch = namedImportRegex.exec(code)) !== null) {
     impMatch[1].split(",").map(s => s.trim()).filter(Boolean).forEach(name => {
       const parts = name.split(/\s+as\s+/);
       allImportedNames.add(parts[parts.length - 1].trim());
     });
+  }
+  // Default imports: import Foo from '...'  or  import Foo, { Bar } from '...'
+  const defaultImportRegex = /import\s+([A-Z][a-zA-Z0-9]*)\s*(?:,|\s+from)/g;
+  let defMatch;
+  while ((defMatch = defaultImportRegex.exec(code)) !== null) {
+    allImportedNames.add(defMatch[1]);
   }
 
   // Find PascalCase names used as JSX self-closing: <Name ... />
@@ -208,6 +216,8 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
 
   const activeFiles: Record<string, string> = {
     "/public/index.html": SANDPACK_INDEX_HTML,
+    // Always inject shadcn/ui components as base — AI files override if present
+    ...SANDPACK_SHADCN_FILES,
     ...sandpackFiles,
   };
 
@@ -303,6 +313,8 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",
+                "clsx": "^2.1.0",
+                "tailwind-merge": "^2.2.1",
                 ...dependencies
               }
             }}

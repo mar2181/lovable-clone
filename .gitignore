@@ -70,3 +70,6 @@ worker/.wrangler/
 
 # node_modules in nested workspaces (worker/, mcp-server/)
 **/node_modules/
+
+# Claude Code internal scratch space (worktrees, session state, etc.)
+.claude/

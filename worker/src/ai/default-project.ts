@@ -1,4 +1,8 @@
-export const defaultFiles = {
+import { shadcnFiles } from "./shadcn-components";
+
+export const defaultFiles: Record<string, string> = {
+  // shadcn/ui components (pre-installed, AI can import directly)
+  ...shadcnFiles,
   "/public/index.html": `<!DOCTYPE html>
 <html lang="en">
   <head>
@@ -30,8 +34,10 @@ export const defaultFiles = {
   "dependencies": {
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-router-dom": "^6.20.0",
     "framer-motion": "^11.0.8",
     "lucide-react": "^0.344.0",
+    "date-fns": "^3.6.0",
     "clsx": "^2.1.0",
     "tailwind-merge": "^2.2.1"
   },

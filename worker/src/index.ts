@@ -23,6 +23,7 @@ export type Bindings = {
   ENVIRONMENT: string;
   GITHUB_PAT: string;
   VERCEL_API_KEY: string;
+  MCP_API_KEY: string;
 };
 
 // Define custom variables that persist through the request (like userId)
