@@ -56,7 +56,7 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "xiaomi/mimo-v2.5-pro", contextFiles, imageBase64 } = body;
+    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64 } = body;
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
