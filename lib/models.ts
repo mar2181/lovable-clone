@@ -89,6 +89,13 @@ export const AI_MODELS: AIModel[] = [
     vision: true,
   },
   {
+    id: "anthropic/claude-haiku-4.5",
+    name: "Claude Haiku 4.5",
+    provider: "Anthropic",
+    description: "Fast, low-latency Anthropic tier",
+    vision: true,
+  },
+  {
     id: "google/gemini-2.5-flash-lite",
     name: "Gemini 2.5 Flash Lite",
     provider: "Google",
