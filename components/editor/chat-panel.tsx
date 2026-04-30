@@ -28,7 +28,7 @@ const PLACEHOLDER_IMAGES = "Generating AI images…";
 // Marker the worker injects into the chunk stream when it switches from
 // streaming model output to running fal.ai image generation. We detect it
 // to update the visible status, but we don't render it in the chat bubble.
-const IMAGE_GEN_MARKER = "🎨 Generating AI images";
+const IMAGE_GEN_MARKER = "Generating AI images";
 
 function summarizeChanges(prev: Record<string, string> | null | undefined, next: Record<string, string>): { added: number; modified: number; total: number } {
   const before = prev || {};

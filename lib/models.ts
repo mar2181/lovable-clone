@@ -6,57 +6,47 @@ export interface AIModel {
   vision?: boolean;
 }
 
+// Starter set — small and reliable. Each model has been picked so we can
+// test it end-to-end without juggling a full catalog. Vision is provided
+// by Claude Sonnet 4.6, which keeps the dropdown honest (the worker
+// auto-switches to this exact ID for image attachments).
 export const AI_MODELS: AIModel[] = [
   {
-    id: "xiaomi/mimo-v2-pro",
-    name: "Mimo V2 Pro",
+    id: "xiaomi/mimo-v2.5-pro",
+    name: "Mimo V2.5 Pro",
     provider: "Xiaomi",
-    description: "Top-tier coding model, 1M context",
+    description: "Default coding model — fast, large context",
     vision: false
   },
   {
-    id: "openai/gpt-4o",
-    name: "GPT-4o",
-    provider: "OpenAI",
-    description: "Fast and versatile (vision)",
+    id: "anthropic/claude-sonnet-4.6",
+    name: "Claude Sonnet 4.6",
+    provider: "Anthropic",
+    description: "Vision-capable, strong general coding",
     vision: true
   },
   {
-    id: "google/gemini-2.5-pro-preview-05-06",
-    name: "Gemini 2.5 Pro",
-    provider: "Google",
-    description: "Vision + huge context window",
-    vision: true
-  },
-  {
-    id: "qwen/qwen3-coder",
-    name: "Qwen3 Coder",
-    provider: "Qwen",
-    description: "Powerful coding specialist",
+    id: "anthropic/claude-opus-4.7",
+    name: "Claude Opus 4.7",
+    provider: "Anthropic",
+    description: "Highest-capability Anthropic tier",
     vision: false
   },
   {
-    id: "deepseek/deepseek-chat",
-    name: "DeepSeek V3",
-    provider: "DeepSeek",
-    description: "Powerful open-source coding model",
+    id: "anthropic/claude-haiku-4.5",
+    name: "Claude Haiku 4.5",
+    provider: "Anthropic",
+    description: "Fast, low-latency drafts",
     vision: false
   },
   {
-    id: "moonshotai/kimi-k2",
-    name: "Kimi K2",
+    id: "moonshotai/kimi-k2.6",
+    name: "Kimi K2.6",
     provider: "Moonshot",
-    description: "Fast free coding model",
-    vision: false
-  },
-  {
-    id: "x-ai/grok-3-mini-beta",
-    name: "Grok 3 Mini",
-    provider: "xAI",
-    description: "Fast reasoning model",
+    description: "Open-source coding alternative",
     vision: false
   },
 ];
 
-export const DEFAULT_MODEL = AI_MODELS[0].id;
-export const VISION_MODEL = "openai/gpt-4.1";
+export const DEFAULT_MODEL = "xiaomi/mimo-v2.5-pro";
+export const VISION_MODEL = "anthropic/claude-sonnet-4.6";

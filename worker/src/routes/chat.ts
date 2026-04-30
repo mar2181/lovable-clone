@@ -56,7 +56,7 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "moonshotai/kimi-k2", contextFiles, imageBase64 } = body;
+    const { prompt, model = "xiaomi/mimo-v2.5-pro", contextFiles, imageBase64 } = body;
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
@@ -66,8 +66,8 @@ chatRouter.post("/:projectId", async (c) => {
     // A brand-new project has latest_version === "1" (the "Initial Setup"
     // version written at project creation, which only contains system files).
     // Any successful AI generation bumps it to 2+. So:
-    //   - latest_version null/1  → first user prompt → SCAFFOLD
-    //   - latest_version >= 2    → user has generated something → ITERATION
+    //   - latest_version null/1  -> first user prompt -> SCAFFOLD
+    //   - latest_version >= 2    -> user has generated something -> ITERATION
     const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
     const latestVersion = parseInt(latestVersionStr || "1");
     const isFirstPrompt = !latestVersionStr || latestVersion < 2;
@@ -83,12 +83,14 @@ chatRouter.post("/:projectId", async (c) => {
       baseURL: "https://openrouter.ai/api/v1",
     });
 
-    // If user attached an image, force a vision-capable model
-    const VISION_MODEL = "openai/gpt-4.1";
+    // If user attached an image, force a vision-capable model.
+    // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
+    // doesn't lie to the user about which model handled their request.
+    const VISION_MODEL = "anthropic/claude-sonnet-4.6";
     const effectiveModel = imageBase64 ? VISION_MODEL : model;
 
     if (imageBase64 && model !== VISION_MODEL) {
-      console.log(`Image attached — auto-switching from ${model} to ${VISION_MODEL} for vision support`);
+      console.log(`Image attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`);
     }
 
     // Model ID comes from frontend (or auto-switched for vision)
@@ -101,14 +103,14 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 5.1 Construct full system prompt with memory, history, and context
     const memoryBlock = projectMemory
-      ? `\n# PROJECT MEMORY (IMPORTANT — read this before doing anything)\nThe user has defined the following context for this project. ALWAYS respect this:\n${projectMemory}\n`
+      ? `\n# PROJECT MEMORY (IMPORTANT - read this before doing anything)\nThe user has defined the following context for this project. ALWAYS respect this:\n${projectMemory}\n`
       : "";
 
     const historyBlock = chatHistory.length > 0
       ? `\n# RECENT CONVERSATION HISTORY (last ${chatHistory.length} exchanges)\nThis is what has been discussed/built recently. Use this to stay consistent:\n${chatHistory.map((h, i) => `${i + 1}. [${h.role}]: ${h.summary}`).join("\n")}\n`
       : "";
 
-    // For ITERATION mode, send only the AI-authored files as context — never
+    // For ITERATION mode, send only the AI-authored files as context - never
     // the system-managed scaffolding (index.tsx, package.json, shadcn/ui, etc).
     // For SCAFFOLD mode, send no context block at all so the model treats this
     // as greenfield.
@@ -153,10 +155,31 @@ chatRouter.post("/:projectId", async (c) => {
           });
         }
 
+        // 6.5 Detect upstream model failure.
+        // The AI SDK can silently yield an empty stream when OpenRouter rejects
+        // the request (e.g. invalid model ID, auth failure, upstream 4xx) instead
+        // of throwing. Treat an empty raw stream as a hard generation error so
+        // the user sees a real message instead of a misleading "no files changed".
+        if (!fullContent || fullContent.trim().length === 0) {
+          console.error(`[Chat] Empty stream from model "${effectiveModel}" - likely invalid model ID or upstream rejection.`);
+          await stream.writeSSE({
+            data: JSON.stringify({
+              type: "error",
+              error: `model returned an empty response or invalid model ID (${effectiveModel}).`,
+            }),
+            event: "error",
+          });
+          return;
+        }
+
         // 7. Parse final completed JSON
         const modifiedFiles = parseStreamToJSON(fullContent);
 
         if (!modifiedFiles || !modifiedFiles.files || Object.keys(modifiedFiles.files).length === 0) {
+          // Model produced text but it didn't parse to a usable file map.
+          // This is NOT an upstream failure - could be a "no change needed"
+          // edit or a malformed response. Keep the silent done branch so we
+          // don't false-positive on legitimate no-op iterations.
           await stream.writeSSE({
             data: JSON.stringify({
               type: "done",
@@ -177,7 +200,7 @@ chatRouter.post("/:projectId", async (c) => {
         // 8.5 Generate AI images via fal.ai (replace FAL_IMAGE[] placeholders)
         try {
           await stream.writeSSE({
-            data: JSON.stringify({ type: "chunk", content: "\n\n🎨 Generating AI images..." }),
+            data: JSON.stringify({ type: "chunk", content: "\n\nGenerating AI images..." }),
             event: "message",
           });
           mergedFiles = await replaceImagePlaceholders(mergedFiles, c.env.FAL_KEY);
