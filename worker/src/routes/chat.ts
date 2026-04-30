@@ -14,6 +14,33 @@ const chatRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 chatRouter.use("*", authMiddleware);
 
+// System-managed file paths. These ship in defaultFiles when a project is
+// created and should NOT be sent to the model as iteration context (the
+// system prompt explicitly forbids the model from creating/modifying them).
+const SYSTEM_MANAGED_PATHS = new Set<string>([
+  "/src/index.tsx",
+  "/src/main.tsx",
+  "/src/index.ts",
+  "/src/main.ts",
+  "/src/styles.css",
+  "/src/index.css",
+  "/public/index.html",
+  "/package.json",
+]);
+
+const SHADCN_PREFIX = "/src/components/ui/";
+
+function stripSystemFiles(files: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(files)) {
+    if (SYSTEM_MANAGED_PATHS.has(k)) continue;
+    if (k.startsWith(SHADCN_PREFIX)) continue;
+    if (k.startsWith("/src/lib/utils.ts")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 chatRouter.post("/:projectId", async (c) => {
   const userId = c.get("userId");
   const projectId = c.req.param("projectId");
@@ -35,6 +62,16 @@ chatRouter.post("/:projectId", async (c) => {
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
     if (!projectExists) return c.json({ error: "Project not found" }, 404);
 
+    // 3.1 Detect SCAFFOLD vs ITERATION mode using server-side state.
+    // A brand-new project has latest_version === "1" (the "Initial Setup"
+    // version written at project creation, which only contains system files).
+    // Any successful AI generation bumps it to 2+. So:
+    //   - latest_version null/1  → first user prompt → SCAFFOLD
+    //   - latest_version >= 2    → user has generated something → ITERATION
+    const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
+    const latestVersion = parseInt(latestVersionStr || "1");
+    const isFirstPrompt = !latestVersionStr || latestVersion < 2;
+
     // 3.5 Load project memory and chat history
     const projectMemory = await kv.get(`project:${projectId}:memory`) || "";
     const chatHistoryStr = await kv.get(`project:${projectId}:chat_history`);
@@ -49,7 +86,7 @@ chatRouter.post("/:projectId", async (c) => {
     // If user attached an image, force a vision-capable model
     const VISION_MODEL = "openai/gpt-4.1";
     const effectiveModel = imageBase64 ? VISION_MODEL : model;
-    
+
     if (imageBase64 && model !== VISION_MODEL) {
       console.log(`Image attached — auto-switching from ${model} to ${VISION_MODEL} for vision support`);
     }
@@ -57,9 +94,10 @@ chatRouter.post("/:projectId", async (c) => {
     // Model ID comes from frontend (or auto-switched for vision)
     const aiModel = openrouter(effectiveModel);
 
-    // 5. Detect first prompt vs iteration
-    const hasExistingFiles = contextFiles && Object.keys(contextFiles).length > 0;
-    const basePrompt = hasExistingFiles ? ITERATION_PROMPT : SCAFFOLD_PROMPT;
+    // 5. Pick the system prompt based on first-prompt detection (server-side,
+    // not based on whatever context the client claims).
+    const basePrompt = isFirstPrompt ? SCAFFOLD_PROMPT : ITERATION_PROMPT;
+    console.log(`[Chat] project=${projectId} mode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`);
 
     // 5.1 Construct full system prompt with memory, history, and context
     const memoryBlock = projectMemory
@@ -70,8 +108,13 @@ chatRouter.post("/:projectId", async (c) => {
       ? `\n# RECENT CONVERSATION HISTORY (last ${chatHistory.length} exchanges)\nThis is what has been discussed/built recently. Use this to stay consistent:\n${chatHistory.map((h, i) => `${i + 1}. [${h.role}]: ${h.summary}`).join("\n")}\n`
       : "";
 
-    const contextBlock = hasExistingFiles
-      ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(contextFiles, null, 2)}\n`
+    // For ITERATION mode, send only the AI-authored files as context — never
+    // the system-managed scaffolding (index.tsx, package.json, shadcn/ui, etc).
+    // For SCAFFOLD mode, send no context block at all so the model treats this
+    // as greenfield.
+    const userFiles = !isFirstPrompt && contextFiles ? stripSystemFiles(contextFiles) : {};
+    const contextBlock = !isFirstPrompt && Object.keys(userFiles).length > 0
+      ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(userFiles, null, 2)}\n`
       : "";
 
     const fullSystemPrompt = `
@@ -128,7 +171,7 @@ chatRouter.post("/:projectId", async (c) => {
         // 8. Sanitize AI-generated code (fix bad icon imports, etc.)
         const sanitizedFiles = sanitizeGeneratedCode(modifiedFiles.files);
 
-        // 8.1 Merge files with context
+        // 8.1 Merge files with context (preserves system defaults + prior user files)
         let mergedFiles = { ...contextFiles, ...sanitizedFiles };
 
         // 8.5 Generate AI images via fal.ai (replace FAL_IMAGE[] placeholders)
@@ -142,9 +185,8 @@ chatRouter.post("/:projectId", async (c) => {
           console.error("Image generation failed (continuing without images):", imgErr);
         }
 
-        // 9. Create new Version
-        const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
-        const newVersionNum = parseInt(latestVersionStr || "1") + 1;
+        // 9. Create new Version (reuse latestVersion read above)
+        const newVersionNum = latestVersion + 1;
 
         const newVersionData = {
           version: newVersionNum,

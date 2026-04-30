@@ -44,7 +44,7 @@ export function WorkspacePanel({ projectId, files, dependencies, onFileChange, o
 
       if (!res || !res.ok) {
         setRecoveryState("error");
-        alert("Worker is DOWN. Open a terminal in the worker folder and run:\n\nnpx wrangler dev --port 8787 --persist-to C:\\Users\\mario\\.wrangler-state\n\nThen click Recovery again.");
+        alert("Worker is DOWN. From the project root run:\n\nnpm run dev:worker\n\n(worker listens on port 8788). Then click Recovery again.");
         setTimeout(() => setRecoveryState("idle"), 3000);
         return;
       }
@@ -58,7 +58,7 @@ export function WorkspacePanel({ projectId, files, dependencies, onFileChange, o
       setTimeout(() => setRecoveryState("idle"), 2000);
     } catch {
       setRecoveryState("error");
-      alert("Worker is not responding. Restart it in your terminal:\n\nnpx wrangler dev --port 8787");
+      alert("Worker is not responding. From the project root run: npm run dev:worker (port 8788).");
       setTimeout(() => setRecoveryState("idle"), 3000);
     }
   }, []);

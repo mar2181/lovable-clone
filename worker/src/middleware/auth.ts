@@ -1,65 +1,117 @@
 import { Context, Next } from "hono";
-import { jwtVerify, createRemoteJWKSet } from "jose";
+import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
 import { registerOwnerIfAdmin } from "../services/credits";
 
-export async function authMiddleware(c: Context, next: Next) {
-  const authHeader = c.req.header("Authorization");
-  
-  if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    return c.json({ error: "Unauthorized - No token provided" }, 401);
-  }
+// JWKS is cached across requests within a worker instance. jose's
+// createRemoteJWKSet handles its own internal caching; we memoize the
+// builder so we don't recompute the URL on every request.
+let cachedJWKS: ReturnType<typeof createRemoteJWKSet> | null = null;
+let cachedFrontendApi: string | null = null;
+let cachedPublishableKey: string | null = null;
 
-  const token = authHeader.split(" ")[1];
-  const clerkPublishableKey = c.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
-
-  if (!clerkPublishableKey) {
-    console.warn("Clerk Publishable Key is missing in environment");
-    // During local dev, if keys are missing we might want to bypass or mock, 
-    // but for production this should strictly fail
-    return c.json({ error: "Server Configuration Error" }, 500);
-  }
-
-  // Extract the JWKS URL from the publishable key format
-  // Clerk publishable keys look like: pk_test_Y2xlcmu...
+function deriveFrontendApi(publishableKey: string): string | null {
+  // Clerk publishable keys: "pk_(test|live)_<base64(frontend-api + '$')>"
+  // The base64 payload decodes to e.g. "clerk.example.com$"
   try {
-    // This is a simplified validation. In a real production environment,
-    // you would verify the JWT against Clerk's JWKS endpoint:
-    // https://<YOUR_CLERK_DOMAIN>/.well-known/jwks.json
-    
-    // For local dev without a real domain, we are extracting the userId directly
-    // This assumes the frontend is sending a valid Clerk token
-    
-    // WARNING: In production, MUST use proper jose jwtVerify with remote JWKS
-    // const JWKS = createRemoteJWKSet(new URL(`https://${clerkDomain}/.well-known/jwks.json`))
-    // const { payload } = await jwtVerify(token, JWKS)
-    
-    // For now, we'll try to extract the user ID assuming token is valid (Dev mode fallback)
-    // A robust implementation would use Clerk's backend SDK (which isn't fully Edge compatible)
-    // or properly configure the JWKS URL
-    
-    // Temporary dev-mode parsing (NOT SECURE FOR PROD)
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(''));
-    
-    const payload = JSON.parse(jsonPayload);
-    
-    // Clerk usually stores user id in 'sub'
-    if (!payload.sub) {
-       return c.json({ error: "Invalid token structure" }, 401);
-    }
-    
-    c.set("userId", payload.sub);
-
-    // Register owner/admin accounts for unlimited credits
-    const email = payload.email || payload.primary_email || payload.email_addresses?.[0]?.email_address;
-    registerOwnerIfAdmin(payload.sub, email);
-
-    await next();
-  } catch (error) {
-    console.error("Auth error:", error);
-    return c.json({ error: "Unauthorized - Invalid token" }, 401);
+    const stripped = publishableKey.replace(/^pk_(test|live)_/, "");
+    const decoded = atob(stripped);
+    const frontendApi = decoded.replace(/\$+$/, "").trim();
+    if (!frontendApi || !frontendApi.includes(".")) return null;
+    return frontendApi;
+  } catch {
+    return null;
   }
+}
+
+function getJWKS(publishableKey: string): { jwks: ReturnType<typeof createRemoteJWKSet>; frontendApi: string } | null {
+  if (cachedJWKS && cachedFrontendApi && cachedPublishableKey === publishableKey) {
+    return { jwks: cachedJWKS, frontendApi: cachedFrontendApi };
+  }
+  const frontendApi = deriveFrontendApi(publishableKey);
+  if (!frontendApi) return null;
+  const jwksUrl = new URL(`https://${frontendApi}/.well-known/jwks.json`);
+  cachedJWKS = createRemoteJWKSet(jwksUrl);
+  cachedFrontendApi = frontendApi;
+  cachedPublishableKey = publishableKey;
+  return { jwks: cachedJWKS, frontendApi };
+}
+
+export async function authMiddleware(c: Context, next: Next) {
+  // ---------------------------------------------------------------------------
+  // MCP API Key bypass — for internal tool access (MCP server, scripted tests).
+  // Intentionally scoped: requires BOTH a non-empty MCP_API_KEY env var AND a
+  // matching X-API-Key header. There is no implicit fallback.
+  // ---------------------------------------------------------------------------
+  const apiKey = c.req.header("X-API-Key");
+  if (apiKey && c.env.MCP_API_KEY && apiKey === c.env.MCP_API_KEY) {
+    const serviceUserId = c.req.header("X-User-Id") || "mcp-service-user";
+    c.set("userId", serviceUserId);
+    console.log(`[MCP Auth] API key accepted, user=${serviceUserId}`);
+    await next();
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Clerk JWT verification — the real auth path.
+  // ---------------------------------------------------------------------------
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized — no bearer token" }, 401);
+  }
+  const token = authHeader.slice("Bearer ".length).trim();
+  if (!token) {
+    return c.json({ error: "Unauthorized — empty token" }, 401);
+  }
+
+  const publishableKey = c.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  if (!publishableKey) {
+    console.error("[Auth] NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set");
+    return c.json({ error: "Server configuration error" }, 500);
+  }
+
+  const jwksBundle = getJWKS(publishableKey);
+  if (!jwksBundle) {
+    console.error("[Auth] Could not derive Clerk frontend API from publishable key");
+    return c.json({ error: "Server configuration error" }, 500);
+  }
+
+  let payload: JWTPayload;
+  try {
+    const result = await jwtVerify(token, jwksBundle.jwks, {
+      issuer: `https://${jwksBundle.frontendApi}`,
+      // Clerk session JWTs do not carry an `aud` claim by default.
+      // Skipping audience verification is consistent with Clerk's own SDKs.
+    });
+    payload = result.payload;
+  } catch (err: any) {
+    const code = err?.code || err?.name || "unknown";
+    if (code === "ERR_JWT_EXPIRED" || code === "JWTExpired") {
+      return c.json({ error: "Unauthorized — token expired" }, 401);
+    }
+    if (code === "ERR_JWS_SIGNATURE_VERIFICATION_FAILED" || code === "JWSSignatureVerificationFailed") {
+      console.warn("[Auth] Bad signature");
+      return c.json({ error: "Unauthorized — invalid signature" }, 401);
+    }
+    if (code === "ERR_JWT_CLAIM_VALIDATION_FAILED" || code === "JWTClaimValidationFailed") {
+      return c.json({ error: "Unauthorized — claim validation failed" }, 401);
+    }
+    console.warn("[Auth] JWT verify failed:", code, err?.message);
+    return c.json({ error: "Unauthorized — invalid token" }, 401);
+  }
+
+  if (!payload.sub || typeof payload.sub !== "string") {
+    return c.json({ error: "Unauthorized — missing subject claim" }, 401);
+  }
+
+  c.set("userId", payload.sub);
+
+  // Register owner/admin accounts for unlimited credits.
+  // (The owner cache is in-process; this is best-effort and re-runs per cold start.)
+  const email =
+    (payload as any).email ||
+    (payload as any).primary_email ||
+    (payload as any).email_addresses?.[0]?.email_address;
+  registerOwnerIfAdmin(payload.sub, email);
+
+  await next();
 }
