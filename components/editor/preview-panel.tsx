@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Laptop, Smartphone, ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -11,6 +11,9 @@ import {
 } from "@codesandbox/sandpack-react";
 import { atomDark } from "@codesandbox/sandpack-themes";
 import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
+import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
+import { useSelectStore, makeSelection } from "@/lib/select-store";
+import { toast } from "sonner";
 
 interface PreviewPanelProps {
   files: Record<string, string>;
@@ -189,6 +192,110 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [key, setKey] = useState(0);
 
+  // ── Selection mode ──────────────────────────────────────────────
+  const isModeActive = useSelectStore((s) => s.isModeActive);
+  const setModeActive = useSelectStore((s) => s.setModeActive);
+  const setSelection = useSelectStore((s) => s.setSelection);
+  const clearSelection = useSelectStore((s) => s.clear);
+  const exitSelectMode = useSelectStore((s) => s.exit);
+  const sandpackWrapperRef = useRef<HTMLDivElement | null>(null);
+  const enableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const expectedOriginRef = useRef<string | null>(null);
+  const [showNewTooltip, setShowNewTooltip] = useState(false);
+
+  // First-time tooltip
+  useEffect(() => {
+    const seen = localStorage.getItem("lovable.selectMode.seen");
+    if (!seen) setShowNewTooltip(true);
+    const timer = setTimeout(() => {
+      setShowNewTooltip(false);
+      if (!seen) localStorage.setItem("lovable.selectMode.seen", "1");
+    }, 8000);
+    return () => clearTimeout(timer);
+  }, []);
+
+  const getIframe = useCallback((): HTMLIFrameElement | null => {
+    return sandpackWrapperRef.current?.querySelector("iframe") ?? null;
+  }, []);
+
+  const sendToIframe = useCallback((type: string, payload: unknown = {}) => {
+    const iframe = getIframe();
+    if (!iframe?.contentWindow) return;
+    try {
+      const origin = expectedOriginRef.current || "*";
+      iframe.contentWindow.postMessage(
+        { source: "lovable-select", v: 1, type, payload },
+        origin,
+      );
+    } catch {
+      // cross-origin — ignore
+    }
+  }, [getIframe]);
+
+  // Send enable/disable when mode toggles
+  useEffect(() => {
+    const iframe = getIframe();
+    if (!iframe) return;
+
+    try {
+      expectedOriginRef.current = new URL(iframe.src).origin;
+    } catch {
+      expectedOriginRef.current = null;
+    }
+
+    if (isModeActive) {
+      // Clear any stale enable timeout
+      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
+
+      enableTimerRef.current = setTimeout(() => {
+        // If the iframe never acknowledged ready, show toast and exit
+        if (isModeActive) {
+          toast.error("Preview not ready — try again in a moment");
+          exitSelectMode();
+        }
+      }, 1500);
+
+      sendToIframe("enable");
+    } else {
+      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
+      clearSelection();
+      sendToIframe("disable");
+    }
+
+    return () => {
+      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
+    };
+  }, [isModeActive]);
+
+  // Listen for messages from the iframe
+  useEffect(() => {
+    const handler = (event: MessageEvent) => {
+      const d = event.data;
+      if (!d || d.source !== "lovable-select" || d.v !== 1) return;
+
+      // Validate origin when possible
+      const iframe = getIframe();
+      if (iframe && expectedOriginRef.current && event.origin !== expectedOriginRef.current) return;
+
+      if (d.type === "selected") {
+        if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
+        setSelection(makeSelection(d.payload));
+      } else if (d.type === "cleared") {
+        clearSelection();
+      } else if (d.type === "ready") {
+        if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
+        // Re-send enable if mode is active (handles Sandpack remount)
+        if (useSelectStore.getState().isModeActive) {
+          sendToIframe("enable");
+        }
+      }
+    };
+
+    window.addEventListener("message", handler);
+    return () => window.removeEventListener("message", handler);
+  }, [setSelection, clearSelection, sendToIframe, getIframe]);
+  // ── End selection mode ──────────────────────────────────────────
+
   const handleRefresh = () => {
     setKey(prev => prev + 1);
   };
@@ -225,6 +332,22 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
     <div className="flex flex-col h-full bg-zinc-950">
       <div className="h-12 border-b border-white/5 bg-zinc-950/50 flex items-center justify-between px-4 shrink-0 z-20 relative">
         <div className="flex bg-zinc-900 rounded-lg p-1 border border-white/5">
+          <SelectModeToggle />
+          {showNewTooltip && (
+            <div
+              className="absolute top-full left-0 mt-2 z-50 bg-blue-600 text-white text-xs px-3 py-2 rounded-lg shadow-lg max-w-[260px] animate-in fade-in slide-in-from-top-1"
+              onClick={() => { setShowNewTooltip(false); localStorage.setItem("lovable.selectMode.seen", "1"); }}
+            >
+              <button
+                className="absolute top-1 right-1.5 text-blue-200 hover:text-white"
+                onClick={() => { setShowNewTooltip(false); localStorage.setItem("lovable.selectMode.seen", "1"); }}
+              >
+                ×
+              </button>
+              New: click any element in the preview to edit it.
+            </div>
+          )}
+          <div className="w-px bg-white/10 mx-0.5" />
           <Button
             variant="ghost"
             size="sm"
@@ -295,6 +418,7 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
         )}
 
         <div
+          ref={sandpackWrapperRef}
           className={cn(
             "relative z-10 transition-all duration-300 ease-in-out overflow-hidden",
             device === "desktop"

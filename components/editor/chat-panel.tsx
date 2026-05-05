@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Bot, Paperclip, Loader2 } from "lucide-react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps } from "@/components/editor/chat-message";
@@ -18,6 +19,8 @@ import {
   validateAttachmentFile,
   type AttachmentUploadResult,
 } from "@/lib/upload";
+import { SelectionChip } from "@/components/editor/selection-chip";
+import { useSelectStore } from "@/lib/select-store";
 
 interface MigrationProposal {
   description: string;
@@ -80,6 +83,10 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
+
+  // ── Selection store ─────────────────────────────────────────────
+  const selection = useSelectStore((s) => s.current);
+  const clearSelection = useSelectStore((s) => s.clear);
 
   // Raw streamed assistant response — used for parsing only, NEVER rendered.
   const rawAssistantResponseRef = useRef("");
@@ -229,6 +236,12 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         model: selectedModel,
         contextFiles,
       };
+      // Snapshot selection at submit time (before streaming clears it)
+      const selectionSnapshot = useSelectStore.getState().current;
+      if (selectionSnapshot) {
+        requestBody.selection = selectionSnapshot;
+      }
+
       if (currentMedia) {
         requestBody.attachments = [
           {
@@ -285,6 +298,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             } else if (data.type === "done") {
               doneReceivedRef.current = true;
               setStatusMessage(PLACEHOLDER_PARSING);
+              clearSelection();
 
               if (data.files && typeof data.files === "object") {
                 onUpdateFiles(data.files);
@@ -307,6 +321,8 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             } else if (data.type === "error") {
               const msg = typeof data.error === "string" && data.error ? data.error : "unknown error";
               finalizeAssistantMessage(`Generation failed: ${msg}`);
+              clearSelection();
+              toast.error("Edit failed — try selecting again");
               setStatusMessage("Error");
             }
           } else if (ev.event === "error") {
@@ -336,6 +352,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       finalizeAssistantMessage(`Generation failed: ${msg}`);
       setStatusMessage("Error");
     } finally {
+      clearSelection();
       // Fallback: if the "done" event was dropped by fetchEventSource (it
       // sometimes is), reconstruct the result from the accumulated raw text.
       if (!doneReceivedRef.current && !finalizedRef.current && rawAssistantResponseRef.current) {
@@ -422,6 +439,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           />
 
           <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
+            {/* Selection chip */}
+            <SelectionChip dimmed={isGenerating} />
+
             {/* Upload progress indicator */}
             {isUploading && (
               <div className="mb-2">

@@ -14,6 +14,8 @@ import { SqlDiffModal } from "@/components/editor/sql-diff-modal";
 import { SupabaseBanner } from "@/components/editor/supabase-banner";
 import type { SupabaseLinkInfo } from "@/lib/supabase-client";
 import { WORKER_URL } from "@/lib/constants";
+import { useSelectStore } from "@/lib/select-store";
+import { MousePointerClick } from "lucide-react";
 
 interface MigrationProposal {
   description: string;
@@ -32,6 +34,47 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
+
+  // ── Selection mode keyboard shortcuts ───────────────────────────
+  const isModeActive = useSelectStore((s) => s.isModeActive);
+  const setModeActive = useSelectStore((s) => s.setModeActive);
+  const exitSelectMode = useSelectStore((s) => s.exit);
+  const [showTooltip, setShowTooltip] = useState(false);
+
+  // First-time tooltip (one-shot, persisted in localStorage)
+  useEffect(() => {
+    const seen = localStorage.getItem("lovable.selectMode.seen");
+    if (!seen) {
+      setShowTooltip(true);
+    }
+  }, []);
+
+  const dismissTooltip = useCallback(() => {
+    setShowTooltip(false);
+    localStorage.setItem("lovable.selectMode.seen", "1");
+  }, []);
+
+  // Global keyboard shortcuts: Cmd/Ctrl+E toggles, Esc exits
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // Don't fire when typing in inputs/textareas
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA" || (e.target as HTMLElement)?.isContentEditable) return;
+
+      if ((e.metaKey || e.ctrlKey) && e.key === "e") {
+        e.preventDefault();
+        setModeActive(!useSelectStore.getState().isModeActive);
+        dismissTooltip();
+      }
+      if (e.key === "Escape" && useSelectStore.getState().isModeActive) {
+        exitSelectMode();
+      }
+    };
+
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [setModeActive, exitSelectMode, dismissTooltip]);
+  // ── End selection keyboard ──────────────────────────────────────
 
   // Supabase state
   const [showSupabaseModal, setShowSupabaseModal] = useState(false);

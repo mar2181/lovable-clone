@@ -11,6 +11,9 @@
  */
 
 const SHARED_RULES = `
+# Element Selection
+Sometimes the user has selected a specific element in the live preview by clicking it. When that's the case, a "User Selection" section will be appended below the system prompt. It contains the element's HTML, CSS selector path, computed styles, and ancestor context. Treat that as the user pointing at a specific thing in the rendered app — their next message is about THAT element only. Apply edits narrowly.
+
 # Environment Details
 - The application uses React 18 with TypeScript and Tailwind CSS (loaded via CDN).
 - The user is viewing the app in a live browser preview using Sandpack.

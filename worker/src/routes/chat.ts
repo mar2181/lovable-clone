@@ -10,6 +10,7 @@ import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
 import { buildAttachmentPromptBlock } from "../services/attachments";
 import { AttachmentInput } from "../types/attachment";
 import type { SupabaseLinkRecord, SupabaseSchemaRecord } from "../types/supabase";
+import type { SelectionPayload } from "../types/selection";
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 
@@ -30,6 +31,7 @@ const SYSTEM_MANAGED_PATHS = new Set<string>([
   "/public/index.html",
   "/package.json",
   "/src/lib/supabase.ts",  // Supabase client — system-managed, never AI-edited
+  "/src/__lovable_select_runtime.ts",  // Selection runtime — system-managed, never AI-edited
 ]);
 
 const SHADCN_PREFIX = "/src/components/ui/";
@@ -45,6 +47,39 @@ const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '${link.anonKey}';
 export const supabase = createClient(url, anonKey, {
   auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
 });
+`;
+}
+
+function validateSelection(s: unknown): SelectionPayload | null {
+  if (!s || typeof s !== "object") return null;
+  const sel = s as Record<string, unknown>;
+  if (typeof sel.id !== "string") return null;
+  if (typeof sel.tag !== "string") return null;
+  if (typeof sel.text !== "string") return null;
+  if (typeof sel.selectorPath !== "string" || sel.selectorPath.length > 500) return null;
+  if (typeof sel.outerHTML !== "string" || sel.outerHTML.length > 4000) return null;
+  if (typeof sel.ancestorContext !== "string") return null;
+  if (!sel.attributes || typeof sel.attributes !== "object") return null;
+  if (!sel.computedStyles || typeof sel.computedStyles !== "object") return null;
+  if (!sel.bbox || typeof sel.bbox !== "object") return null;
+  return s as SelectionPayload;
+}
+
+function buildSelectionBlock(selection: SelectionPayload): string {
+  return `
+## User Selection
+
+The user pointed at this specific element in the live preview. Their next message is about THIS element only — apply edits narrowly. If they ask a question, answer about this element.
+
+**Element:** ${selection.outerHTML}
+**Tag:** ${selection.tag}
+**Text:** ${selection.text || "(empty)"}
+**CSS selector path:** ${selection.selectorPath}
+**Attributes:** ${JSON.stringify(selection.attributes)}
+**Computed styles:** ${JSON.stringify(selection.computedStyles)}
+**Ancestor context:** ${selection.ancestorContext}
+
+To edit it: search the project files for the matching JSX. Use the text content first ("${selection.text}") to narrow candidates, then the tag + className to disambiguate. If multiple matches remain, prefer the one whose ancestor context matches. If you cannot confidently identify exactly one source location, ASK before editing.
 `;
 }
 
@@ -80,7 +115,21 @@ chatRouter.post("/:projectId", async (c) => {
       contextFiles,
       imageBase64,
       attachments,
+      selection,
     } = body;
+
+    // 2.5 Validate selection if present
+    let selectionBlock = "";
+    if (selection !== undefined && selection !== null) {
+      const validated = validateSelection(selection);
+      if (!validated) {
+        return c.json({ error: "Selection too large or malformed — try a smaller element." }, 400);
+      }
+      selectionBlock = buildSelectionBlock(validated);
+      console.log(
+        `[chat] selection projectId=${projectId} tag=${validated.tag} textLen=${validated.text.length} htmlLen=${validated.outerHTML.length} selectorLen=${validated.selectorPath.length}`,
+      );
+    }
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
@@ -219,6 +268,7 @@ Migration rules:
     const fullSystemPrompt = `
       ${basePrompt}
       ${supabaseBlock}
+      ${selectionBlock}
       ${memoryBlock}
       ${historyBlock}
       ${contextBlock}
