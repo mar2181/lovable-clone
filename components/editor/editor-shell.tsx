@@ -6,7 +6,19 @@ import { ChatPanel } from "@/components/editor/chat-panel";
 import { WorkspacePanel } from "@/components/editor/workspace-panel";
 import { EditorHeader } from "@/components/editor/editor-header";
 import { ProjectMemory } from "@/components/editor/project-memory";
+import { SupabaseButton } from "@/components/editor/supabase-button";
+import { SupabaseModal } from "@/components/editor/supabase-modal";
+import { SupabaseStatusMenu } from "@/components/editor/supabase-status-menu";
+import { SupabaseSchemaPanel } from "@/components/editor/supabase-schema-panel";
+import { SqlDiffModal } from "@/components/editor/sql-diff-modal";
+import { SupabaseBanner } from "@/components/editor/supabase-banner";
+import type { SupabaseLinkInfo } from "@/lib/supabase-client";
 import { WORKER_URL } from "@/lib/constants";
+
+interface MigrationProposal {
+  description: string;
+  sql: string;
+}
 
 // Debounce window for auto-saving manual code edits to the server.
 const MANUAL_SAVE_DEBOUNCE_MS = 1800;
@@ -20,6 +32,40 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
+
+  // Supabase state
+  const [showSupabaseModal, setShowSupabaseModal] = useState(false);
+  const [showSupabaseMenu, setShowSupabaseMenu] = useState(false);
+  const [showSchemaPanel, setShowSchemaPanel] = useState(false);
+  const [supabaseLink, setSupabaseLink] = useState<SupabaseLinkInfo | null>(null);
+  const [supabaseBannerVisible, setSupabaseBannerVisible] = useState(false);
+  const [pendingMigration, setPendingMigration] = useState<MigrationProposal | null>(null);
+
+  const handleMigrationProposed = useCallback((migration: MigrationProposal) => {
+    setPendingMigration(migration);
+  }, []);
+
+  const handleMigrationApplied = useCallback(() => {
+    setPendingMigration(null);
+  }, []);
+
+  const handleMigrationSkipped = useCallback(() => {
+    setPendingMigration(null);
+  }, []);
+
+  const handleSupabaseLinked = useCallback((link: SupabaseLinkInfo) => {
+    setSupabaseLink(link);
+    setShowSupabaseModal(false);
+  }, []);
+
+  const handleSupabaseUnlinked = useCallback(() => {
+    setSupabaseLink(null);
+  }, []);
+
+  const handleReconnect = useCallback(() => {
+    setSupabaseBannerVisible(false);
+    setShowSupabaseModal(true);
+  }, []);
 
   // Refs used by the debounced manual-save logic. We need them so the save
   // closure always sees the latest files/state without retriggering effects.
@@ -179,7 +225,22 @@ export function EditorShell({ projectId }: { projectId: string }) {
 
   return (
     <div className="flex flex-col h-screen w-full bg-zinc-950 text-foreground">
-      <EditorHeader projectId={projectId} onOpenMemory={() => setIsMemoryOpen(true)} contextFiles={files} onUpdateFiles={handleAIFilesUpdate} />
+      <SupabaseBanner visible={supabaseBannerVisible} onReconnect={handleReconnect} />
+
+      <EditorHeader
+        projectId={projectId}
+        onOpenMemory={() => setIsMemoryOpen(true)}
+        contextFiles={files}
+        onUpdateFiles={handleAIFilesUpdate}
+        supabaseSlot={
+          <SupabaseButton
+            projectId={projectId}
+            onOpenModal={() => setShowSupabaseModal(true)}
+            onOpenMenu={() => setShowSupabaseMenu(true)}
+            onLinkUpdate={setSupabaseLink}
+          />
+        }
+      />
       <ProjectMemory projectId={projectId} isOpen={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
 
       {/* Tiny save-status badge — shows the user that manual edits are persisting */}
@@ -206,6 +267,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
             contextFiles={files}
             onUpdateFiles={handleAIFilesUpdate}
             onUpdateDependencies={setDependencies}
+            onMigrationProposed={handleMigrationProposed}
           />
         </div>
 
@@ -228,6 +290,41 @@ export function EditorShell({ projectId }: { projectId: string }) {
           />
         </div>
       </div>
+
+      {/* Supabase modals & panels */}
+      <SupabaseModal
+        projectId={projectId}
+        open={showSupabaseModal}
+        onClose={() => setShowSupabaseModal(false)}
+        onLinked={handleSupabaseLinked}
+      />
+
+      <div className="relative">
+        <SupabaseStatusMenu
+          projectId={projectId}
+          link={supabaseLink!}
+          open={showSupabaseMenu}
+          onClose={() => setShowSupabaseMenu(false)}
+          onUnlinked={handleSupabaseUnlinked}
+          onViewSchema={() => setShowSchemaPanel(true)}
+        />
+      </div>
+
+      <SupabaseSchemaPanel
+        projectId={projectId}
+        open={showSchemaPanel}
+        onClose={() => setShowSchemaPanel(false)}
+      />
+
+      {pendingMigration && (
+        <SqlDiffModal
+          projectId={projectId}
+          migration={pendingMigration}
+          open={!!pendingMigration}
+          onApplied={handleMigrationApplied}
+          onSkip={handleMigrationSkipped}
+        />
+      )}
     </div>
   );
 }

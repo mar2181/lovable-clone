@@ -207,3 +207,31 @@ ${SHARED_RULES}
 
 // Keep backward compatibility
 export const SYSTEM_PROMPT = SCAFFOLD_PROMPT;
+
+/**
+ * Supabase usage guide — injected into the system prompt when a project is
+ * linked to Supabase. The Supabase Block (schema + connection info) is built
+ * dynamically in chat.ts and prepended before this guide.
+ */
+export const SUPABASE_USAGE_GUIDE = `
+# Supabase Backend Rules
+
+This project has Supabase wired up.
+
+ALWAYS:
+- Import the client from './lib/supabase'.
+- Use TypeScript and proper error handling on every Supabase call.
+- Show a loading state while data is being fetched.
+- Show an error state on failures.
+- Use Supabase Auth (\`supabase.auth.*\`) — do not roll your own.
+- Use RLS on every new table. Default policy: authenticated users can read/write their own rows.
+
+NEVER:
+- Modify /src/lib/supabase.ts. It is system-managed.
+- Create a second Supabase client.
+- Hardcode the anon key or URL — they're provided via the imported client.
+- Use service-role keys.
+- DROP a table without explicit user request.
+
+When the user asks for any feature that needs persistence, propose a migration. The user must approve before it runs.
+`;

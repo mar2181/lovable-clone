@@ -12,6 +12,7 @@ import templateRouter from "./routes/template";
 import blogRouter from "./routes/blog";
 import bridgeRouter from "./routes/bridge";
 import attachmentsRouter from "./routes/attachments";
+import supabaseRouter from "./routes/supabase";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -26,6 +27,11 @@ export type Bindings = {
   VERCEL_API_KEY: string;
   MCP_API_KEY: string;
   R2_PUBLIC_DOMAIN: string;
+  SUPABASE_OAUTH_CLIENT_ID: string;
+  SUPABASE_OAUTH_CLIENT_SECRET: string;
+  SUPABASE_OAUTH_REDIRECT_URI: string;
+  SUPABASE_TOKEN_ENC_KEY: string;
+  OAUTH_STATE_SECRET: string;
 };
 
 // Define custom variables that persist through the request (like userId)
@@ -59,6 +65,7 @@ app.route("/api/template", templateRouter);
 app.route("/api/blog", blogRouter);
 app.route("/api/bridge", bridgeRouter);
 app.route("/api/attachments", attachmentsRouter);
+app.route("/api/supabase", supabaseRouter);
 
 app.get("/", (c) => {
   return c.text("Lovable Clone API is running!");

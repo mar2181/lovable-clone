@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
+import type { SupabaseLinkRecord } from "../types/supabase";
 import * as fflate from "fflate";
 
 const exportRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -25,7 +26,15 @@ exportRouter.get("/:projectId/:versionNum", async (c) => {
     if (!versionObj) return c.json({ error: "Version not found" }, 404);
 
     const versionData = await versionObj.json() as { files: Record<string, string> };
-    
+
+    // Inject .env.example if Supabase is linked
+    const supabaseLinkRaw = await kv.get(`project:${projectId}:supabase`);
+    if (supabaseLinkRaw) {
+      const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
+      versionData.files[".env.example"] =
+        `VITE_SUPABASE_URL=${link.restUrl}\nVITE_SUPABASE_ANON_KEY=${link.anonKey}\n`;
+    }
+
     // Create ZIP in memory using fflate
     const zipData: Record<string, Uint8Array> = {};
     const textEncoder = new TextEncoder();

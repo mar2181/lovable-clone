@@ -125,7 +125,7 @@ function VercelButton({ projectId }: { projectId: string }) {
   );
 }
 
-export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFiles }: { projectId: string; onOpenMemory?: () => void; contextFiles?: Record<string, string>; onUpdateFiles?: (files: Record<string, string>) => void }) {
+export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFiles, supabaseSlot }: { projectId: string; onOpenMemory?: () => void; contextFiles?: Record<string, string>; onUpdateFiles?: (files: Record<string, string>) => void; supabaseSlot?: React.ReactNode }) {
   return (
     <header className="h-14 border-b border-white/5 bg-zinc-950/80 backdrop-blur-xl flex items-center justify-between px-4 shrink-0">
       <div className="flex items-center gap-4">
@@ -160,6 +160,7 @@ export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFi
         </Button>
         <GitHubButton projectId={projectId} />
         <VercelButton projectId={projectId} />
+        {supabaseSlot}
         <ExportButton projectId={projectId} />
       </div>
     </header>

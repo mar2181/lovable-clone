@@ -19,11 +19,17 @@ import {
   type AttachmentUploadResult,
 } from "@/lib/upload";
 
+interface MigrationProposal {
+  description: string;
+  sql: string;
+}
+
 interface ChatPanelProps {
   projectId: string;
   contextFiles: Record<string, string>;
   onUpdateFiles: (files: Record<string, string>) => void;
   onUpdateDependencies?: (deps: Record<string, string>) => void;
+  onMigrationProposed?: (migration: MigrationProposal) => void;
 }
 
 // Visible-message states. The chat bubble shows ONE of these strings,
@@ -59,7 +65,7 @@ function buildDoneSummary(diff: { added: number; modified: number; total: number
   return `Done — ${parts.join(", ")} ${noun}. Preview updated.`;
 }
 
-export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDependencies }: ChatPanelProps) {
+export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDependencies, onMigrationProposed }: ChatPanelProps) {
   const [prompt, setPrompt] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [messages, setMessages] = useState<ChatMessageProps[]>([]);
@@ -285,6 +291,10 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 if (data.dependencies && onUpdateDependencies) {
                   onUpdateDependencies(data.dependencies);
                 }
+                // Surface proposed migration to parent
+                if (data.migration && onMigrationProposed) {
+                  onMigrationProposed(data.migration as MigrationProposal);
+                }
                 const diff = summarizeChanges(filesAtSubmitRef.current, data.files);
                 finalizeAssistantMessage(buildDoneSummary(diff));
               } else {
@@ -336,6 +346,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             onUpdateFiles(merged);
             if (parsed.dependencies && onUpdateDependencies) {
               onUpdateDependencies(parsed.dependencies);
+            }
+            if (parsed.migration && onMigrationProposed) {
+              onMigrationProposed(parsed.migration as MigrationProposal);
             }
             const diff = summarizeChanges(filesAtSubmitRef.current, merged);
             finalizeAssistantMessage(buildDoneSummary(diff));

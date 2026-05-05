@@ -20,10 +20,19 @@ ENVIRONMENT = "development"
 # Without it, attachment uploads will return 500.
 R2_PUBLIC_DOMAIN = ""
 
-# Secrets (loaded from .dev.vars for local dev)
+# Supabase OAuth — non-secret redirect URI (must match what's registered in the
+# Supabase OAuth App dashboard). Set to production URL for deploy, or localhost
+# for dev.
+SUPABASE_OAUTH_REDIRECT_URI = "http://localhost:8788/api/supabase/oauth/callback"
+
+# Secrets (loaded from .dev.vars for local dev, wrangler secret put for production)
 # CLERK_SECRET_KEY
 # OPENROUTER_API_KEY
 # FAL_KEY
+# SUPABASE_OAUTH_CLIENT_ID
+# SUPABASE_OAUTH_CLIENT_SECRET
+# SUPABASE_TOKEN_ENC_KEY      (32-byte hex — openssl rand -hex 32)
+# OAUTH_STATE_SECRET           (32-byte hex — openssl rand -hex 32)
 
 # Daily garbage-collection cron (03:00 UTC) — cleans up orphaned attachment
 # R2 objects and GC markers.

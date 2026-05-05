@@ -142,6 +142,15 @@ projectsRouter.delete("/:id", async (c) => {
     await kv.delete(`user:${userId}:project:${projectId}`);
     await kv.delete(`project:${projectId}:latest_version`);
 
+    // Cascade-unlink Supabase (keep OAuth tokens — other projects may use them)
+    try {
+      await kv.delete(`project:${projectId}:supabase`);
+      await kv.delete(`project:${projectId}:supabase_schema`);
+      await kv.delete(`project:${projectId}:supabase_migrations`);
+    } catch (err: any) {
+      console.error(`[Projects] Supabase cascade-unlink failed: ${err?.message || "unknown"}`);
+    }
+
     // ── Cascade-delete attachments ──────────────────────────────────────────────
     try {
       const attListKey = `project:${projectId}:attachments`;

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
+import type { SupabaseLinkRecord } from "../types/supabase";
 
 const githubRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -59,6 +60,14 @@ githubRouter.post("/push", async (c) => {
     if (!createRes.ok && createRes.status !== 422) {
       const err = await createRes.text();
       return c.json({ error: `Failed to create repo: ${err}` }, 500);
+    }
+
+    // Inject .env.example if Supabase is linked
+    const supabaseLinkRaw = await kv.get(`project:${projectId}:supabase`);
+    if (supabaseLinkRaw) {
+      const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
+      files[".env.example"] =
+        `VITE_SUPABASE_URL=${link.restUrl}\nVITE_SUPABASE_ANON_KEY=${link.anonKey}\n`;
     }
 
     // Step 3: Push all files using the Contents API (simple, works for <100 files)

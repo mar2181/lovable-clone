@@ -9,6 +9,7 @@ import { replaceImagePlaceholders } from "../services/image-gen";
 import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
 import { buildAttachmentPromptBlock } from "../services/attachments";
 import { AttachmentInput } from "../types/attachment";
+import type { SupabaseLinkRecord, SupabaseSchemaRecord } from "../types/supabase";
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 
@@ -28,9 +29,24 @@ const SYSTEM_MANAGED_PATHS = new Set<string>([
   "/src/index.css",
   "/public/index.html",
   "/package.json",
+  "/src/lib/supabase.ts",  // Supabase client — system-managed, never AI-edited
 ]);
 
 const SHADCN_PREFIX = "/src/components/ui/";
+
+function buildSupabaseLib(link: SupabaseLinkRecord): string {
+  return `// /src/lib/supabase.ts
+// SYSTEM-MANAGED FILE — DO NOT EDIT.
+import { createClient } from '@supabase/supabase-js';
+
+const url = import.meta.env.VITE_SUPABASE_URL ?? '${link.restUrl}';
+const anonKey = import.meta.env.VITE_SUPABASE_ANON_KEY ?? '${link.anonKey}';
+
+export const supabase = createClient(url, anonKey, {
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true },
+});
+`;
+}
 
 function stripSystemFiles(files: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
@@ -117,7 +133,13 @@ chatRouter.post("/:projectId", async (c) => {
     const basePrompt = isFirstPrompt ? SCAFFOLD_PROMPT : ITERATION_PROMPT;
     console.log(`[Chat] project=${projectId} mode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`);
 
-    // 5.1 Construct full system prompt with memory, history, and context
+    // 5.1 Load Supabase link + schema (if this project is connected)
+    const supabaseLinkRaw = await kv.get(`project:${projectId}:supabase`);
+    const supabaseLink: SupabaseLinkRecord | null = supabaseLinkRaw ? JSON.parse(supabaseLinkRaw) : null;
+    const supabaseSchemaRaw = supabaseLink ? await kv.get(`project:${projectId}:supabase_schema`) : null;
+    const supabaseSchema: SupabaseSchemaRecord | null = supabaseSchemaRaw ? JSON.parse(supabaseSchemaRaw) : null;
+
+    // 5.2 Construct full system prompt with memory, history, and context
     const memoryBlock = projectMemory
       ? `\n# PROJECT MEMORY (IMPORTANT - read this before doing anything)\nThe user has defined the following context for this project. ALWAYS respect this:\n${projectMemory}\n`
       : "";
@@ -125,6 +147,65 @@ chatRouter.post("/:projectId", async (c) => {
     const historyBlock = chatHistory.length > 0
       ? `\n# RECENT CONVERSATION HISTORY (last ${chatHistory.length} exchanges)\nThis is what has been discussed/built recently. Use this to stay consistent:\n${chatHistory.map((h, i) => `${i + 1}. [${h.role}]: ${h.summary}`).join("\n")}\n`
       : "";
+
+    // Build Supabase Block for the AI prompt (only if linked)
+    let supabaseBlock = "";
+    if (supabaseLink) {
+      const tablesMd = supabaseSchema?.tables?.map((t) => {
+        const cols = t.columns.map((c) =>
+          `  - ${c.name} (${c.type}${c.nullable ? "" : " NOT NULL"}${c.default !== null ? ` DEFAULT ${c.default}` : ""})`
+        ).join("\n");
+        const policies = t.policies?.length
+          ? `  Policies: ${t.policies.map((p) => `${p.name} (${p.command})[${p.roles.join(",")}]`).join(", ")}\n`
+          : "";
+        return `### ${t.name}${t.rlsEnabled ? " (RLS ON)" : " (RLS OFF ⚠️)"}\n${policies}${cols}`;
+      }).join("\n\n") || "(no tables found in public schema)";
+
+      supabaseBlock = `
+# SUPABASE BACKEND IS CONNECTED
+
+This project is linked to a real Supabase project. You can use it for auth, database, storage, and realtime.
+
+Project ref: ${supabaseLink.ref}
+REST URL: ${supabaseLink.restUrl}
+Anon key (public, safe to commit): ${supabaseLink.anonKey}
+
+## Current schema
+
+${tablesMd}
+
+## How to use Supabase in generated code
+
+- Import the client: \`import { supabase } from './lib/supabase'\`
+- Do NOT create a new Supabase client anywhere. The shared instance is provided.
+- Do NOT modify \`/src/lib/supabase.ts\` — it is system-managed.
+- For any data the user wants to persist, use the schema above. If a needed table doesn't exist, propose a migration (see below).
+- For auth, use \`supabase.auth.signUp\`, \`signInWithPassword\`, \`signInWithOAuth\`, \`signOut\`. Wrap in error handling.
+- For storage, use \`supabase.storage.from(bucket)\`.
+
+## Proposing migrations
+
+If the user's request requires schema changes, return a \`migration\` object alongside \`files\` in your JSON response:
+
+\`\`\`json
+{
+  "files": { "/src/components/SignupForm.tsx": "..." },
+  "migration": {
+    "description": "Create leads table with email + name, RLS enabled, anon insert allowed.",
+    "sql": "CREATE TABLE leads (...);\\nALTER TABLE leads ENABLE ROW LEVEL SECURITY;\\nCREATE POLICY \\"anon_can_insert\\" ON leads FOR INSERT TO anon WITH CHECK (true);"
+  },
+  "dependencies": {}
+}
+\`\`\`
+
+Migration rules:
+- ALWAYS enable RLS on new tables.
+- ALWAYS include at least one policy. Default to anon insert-only for lead-capture, authenticated read/write for app data.
+- Prefer additive changes. Avoid DROP unless explicitly asked.
+- Never reference tables that don't exist in the schema above and weren't created in this migration.
+- The user reviews and approves migrations before they run; you don't have to be conservative, just be correct.
+`;
+    }
 
     // For ITERATION mode, send only the AI-authored files as context - never
     // the system-managed scaffolding (index.tsx, package.json, shadcn/ui, etc).
@@ -137,11 +218,15 @@ chatRouter.post("/:projectId", async (c) => {
 
     const fullSystemPrompt = `
       ${basePrompt}
+      ${supabaseBlock}
       ${memoryBlock}
       ${historyBlock}
       ${contextBlock}
       Remember: Reply ONLY in valid JSON. No markdown ticks, no extra text.
     `;
+
+    // Build virtual lib/supabase.ts if linked (injected server-side, not in user files)
+    const virtualSupabaseLib = supabaseLink ? buildSupabaseLib(supabaseLink) : null;
 
     // 6. Return Streaming Server-Sent Events (SSE) Response
     return streamSSE(c, async (stream) => {
@@ -232,17 +317,26 @@ chatRouter.post("/:projectId", async (c) => {
         // 7. Parse final completed JSON
         const modifiedFiles = parseStreamToJSON(fullContent);
 
+        // Extract migration if the AI proposed one
+        const aiMigration = (modifiedFiles && modifiedFiles.migration && typeof modifiedFiles.migration === "object"
+          && typeof modifiedFiles.migration.description === "string"
+          && typeof modifiedFiles.migration.sql === "string")
+          ? { description: modifiedFiles.migration.description as string, sql: modifiedFiles.migration.sql as string }
+          : null;
+
         if (!modifiedFiles || !modifiedFiles.files || Object.keys(modifiedFiles.files).length === 0) {
           // Model produced text but it didn't parse to a usable file map.
           // This is NOT an upstream failure - could be a "no change needed"
           // edit or a malformed response. Keep the silent done branch so we
           // don't false-positive on legitimate no-op iterations.
+          const donePayload: Record<string, unknown> = {
+            type: "done",
+            files: contextFiles,
+            dependencies: {},
+          };
+          if (aiMigration) (donePayload as any).migration = aiMigration;
           await stream.writeSSE({
-            data: JSON.stringify({
-              type: "done",
-              files: contextFiles,
-              dependencies: {},
-            }),
+            data: JSON.stringify(donePayload),
             event: "message",
           });
           return;
@@ -253,6 +347,11 @@ chatRouter.post("/:projectId", async (c) => {
 
         // 8.1 Merge files with context (preserves system defaults + prior user files)
         let mergedFiles = { ...contextFiles, ...sanitizedFiles };
+
+        // 8.2 Inject virtual lib/supabase.ts if linked (so Sandpack can use it)
+        if (virtualSupabaseLib) {
+          mergedFiles["/src/lib/supabase.ts"] = virtualSupabaseLib;
+        }
 
         // 8.5 Generate AI images via fal.ai (replace FAL_IMAGE[] placeholders)
         try {
@@ -301,13 +400,15 @@ chatRouter.post("/:projectId", async (c) => {
         await deductCredit(userId, 1, kv);
 
         // 11. Send Completion Event
+        const donePayload: Record<string, unknown> = {
+          type: "done",
+          version: newVersionNum,
+          files: mergedFiles,
+          dependencies: modifiedFiles.dependencies,
+        };
+        if (aiMigration) (donePayload as any).migration = aiMigration;
         await stream.writeSSE({
-          data: JSON.stringify({
-            type: "done",
-            version: newVersionNum,
-            files: mergedFiles,
-            dependencies: modifiedFiles.dependencies
-          }),
+          data: JSON.stringify(donePayload),
           event: "message",
         });
 

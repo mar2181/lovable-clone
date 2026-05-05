@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
+import type { SupabaseLinkRecord } from "../types/supabase";
 
 const vercelRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -76,6 +77,16 @@ vercelRouter.post("/deploy", async (c) => {
       });
     }
 
+    // Inject Supabase env vars if linked
+    const kv = c.env.KV_METADATA;
+    const supabaseLinkRaw = await kv.get(`project:${projectId}:supabase`);
+    const deployEnv: Record<string, string> = {};
+    if (supabaseLinkRaw) {
+      const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
+      deployEnv.VITE_SUPABASE_URL = link.restUrl;
+      deployEnv.VITE_SUPABASE_ANON_KEY = link.anonKey;
+    }
+
     // Deploy to Vercel using the v13 deployments API
     const deployRes = await fetch("https://api.vercel.com/v13/deployments", {
       method: "POST",
@@ -92,6 +103,7 @@ vercelRouter.post("/deploy", async (c) => {
         projectSettings: {
           framework: "create-react-app",
         },
+        env: deployEnv,
       }),
     });
 
