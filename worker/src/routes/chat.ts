@@ -7,6 +7,8 @@ import { parseStreamToJSON } from "../ai/file-parser";
 import { hasEnoughCredits, deductCredit } from "../services/credits";
 import { replaceImagePlaceholders } from "../services/image-gen";
 import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
+import { buildAttachmentPromptBlock } from "../services/attachments";
+import { AttachmentInput } from "../types/attachment";
 import { streamText } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 
@@ -56,7 +58,13 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64 } = body;
+    const {
+      prompt,
+      model = "moonshotai/kimi-k2.6",
+      contextFiles,
+      imageBase64,
+      attachments,
+    } = body;
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
@@ -83,14 +91,22 @@ chatRouter.post("/:projectId", async (c) => {
       baseURL: "https://openrouter.ai/api/v1",
     });
 
-    // If user attached an image, force a vision-capable model.
+    // If user attached an image (legacy or new), force a vision-capable model.
     // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
     // doesn't lie to the user about which model handled their request.
     const VISION_MODEL = "openai/gpt-4.1";
-    const effectiveModel = imageBase64 ? VISION_MODEL : model;
-
-    if (imageBase64 && model !== VISION_MODEL) {
-      console.log(`Image attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`);
+    const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
+    const hasImageAttachments =
+      hasAttachments && attachments.some((a: AttachmentInput) => a.kind === "image");
+    // Videos-only does NOT trigger auto-switch (hasOnlyVideoAttachments case).
+    let effectiveModel = model;
+    if (imageBase64 || hasImageAttachments) {
+      effectiveModel = VISION_MODEL;
+      if (model !== VISION_MODEL) {
+        console.log(
+          `Image attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`,
+        );
+      }
     }
 
     // Model ID comes from frontend (or auto-switched for vision)
@@ -131,7 +147,46 @@ chatRouter.post("/:projectId", async (c) => {
     return streamSSE(c, async (stream) => {
       try {
         const userContent: any[] = [{ type: "text", text: prompt }];
-        if (imageBase64) {
+
+        // ── New attachment pipeline (takes priority over legacy imageBase64) ────
+        if (hasAttachments) {
+          // Push image attachments as binary for vision models
+          if (hasImageAttachments) {
+            for (const att of attachments as AttachmentInput[]) {
+              if (att.kind === "image") {
+                try {
+                  const r2obj = await r2.get(att.r2Key);
+                  if (r2obj) {
+                    const binary = new Uint8Array(await r2obj.arrayBuffer());
+                    userContent.push({
+                      type: "image" as const,
+                      image: binary,
+                      mimeType: att.mimeType as any,
+                    });
+                  }
+                } catch (imgErr: any) {
+                  console.warn(
+                    `[Chat] Could not fetch image attachment ${att.id} from R2: ${imgErr?.message || "unknown"}`,
+                  );
+                }
+              }
+            }
+          }
+
+          // Build and inject the structured attachment text block for ALL attachments
+          const promptBlock = buildAttachmentPromptBlock(
+            (attachments as AttachmentInput[]).map((a) => ({
+              kind: a.kind,
+              mimeType: a.mimeType,
+              filename: a.filename,
+              publicUrl: a.url,
+            })),
+          );
+          userContent.push({ type: "text", text: promptBlock });
+        }
+
+        // ── Legacy imageBase64 (backwards compat — only used when no attachments) ──
+        if (imageBase64 && !hasAttachments) {
           // AI SDK v6 rejects data: URLs (only accepts http/https or binary). Decode base64 to Uint8Array.
           const mimeMatch = imageBase64.match(/^data:([^;]+);/);
           const mimeType = (mimeMatch ? mimeMatch[1] : "image/jpeg") as any;

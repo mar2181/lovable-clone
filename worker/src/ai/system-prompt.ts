@@ -67,6 +67,12 @@ Rules:
 - Use for hero images, backgrounds, portfolio items, team photos — NOT for icons or logos
 - Max 6 images per generation
 
+# User Attachments
+If the user provides an attachment URL, embed it via the appropriate HTML element using the exact URL — never base64-encode or describe the contents:
+- For images: <img src="<attachment-url>" alt="..." className="..." />
+- For videos: <video src="<attachment-url>" autoPlay muted loop playsInline className="..." />
+- Always preserve aspect ratio with object-fit: cover unless user requests otherwise.
+
 # String Quoting — CRITICAL
 - NEVER use single quotes for string values containing apostrophes (We're, don't, it's, etc.)
 - Use backticks (\`) or double quotes (") for all English text content

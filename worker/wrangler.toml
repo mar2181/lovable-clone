@@ -15,10 +15,20 @@ id = "local_dev_kv_placeholder_id"
 [vars]
 ENVIRONMENT = "development"
 
+# R2 public domain for attachment URLs. Set this to your R2 bucket's public
+# custom domain or the r2.dev domain (e.g. "https://pub-<hash>.r2.dev").
+# Without it, attachment uploads will return 500.
+R2_PUBLIC_DOMAIN = ""
+
 # Secrets (loaded from .dev.vars for local dev)
 # CLERK_SECRET_KEY
 # OPENROUTER_API_KEY
 # FAL_KEY
+
+# Daily garbage-collection cron (03:00 UTC) — cleans up orphaned attachment
+# R2 objects and GC markers.
+[triggers]
+crons = ["0 3 * * *"]
 
 # Local dev: pin port to avoid collision with other services
 [dev]

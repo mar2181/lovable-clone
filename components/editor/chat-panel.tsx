@@ -1,16 +1,23 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Loader2, Eye } from "lucide-react";
+import { Send, Bot, Paperclip, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps } from "@/components/editor/chat-message";
 import { GenerationProgress } from "@/components/editor/generation-progress";
+import { AttachmentPreview } from "@/components/editor/attachment-preview";
+import { UploadProgress } from "@/components/editor/upload-progress";
 import { DEFAULT_MODEL, VISION_MODEL, AI_MODELS } from "@/lib/models";
 import { useAuth } from "@clerk/nextjs";
 import { WORKER_URL } from "@/lib/constants";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { parseStreamToJSON } from "@/lib/file-parser";
+import {
+  uploadAttachment,
+  validateAttachmentFile,
+  type AttachmentUploadResult,
+} from "@/lib/upload";
 
 interface ChatPanelProps {
   projectId: string;
@@ -58,9 +65,13 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   const [messages, setMessages] = useState<ChatMessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
-  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [attachedMedia, setAttachedMedia] = useState<AttachmentUploadResult | null>(null);
   const [previousModel, setPreviousModel] = useState<string | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState(0);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
 
@@ -99,29 +110,80 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     }
   }, [messages, isGenerating]);
 
-  const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleAttachmentUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      if (file.size > 5 * 1024 * 1024) {
-        alert("Image must be smaller than 5MB");
-        return;
+    if (!file) return;
+
+    // Client-side validation
+    const validationError = validateAttachmentFile(file);
+    if (validationError) {
+      setUploadError(validationError);
+      return;
+    }
+
+    setIsUploading(true);
+    setUploadProgress(0);
+    setUploadError(null);
+
+    // Auto-switch to vision model for images
+    if (file.type.startsWith("image/")) {
+      const currentModelInfo = AI_MODELS.find((m) => m.id === selectedModel);
+      if (currentModelInfo && !currentModelInfo.vision) {
+        setPreviousModel(selectedModel);
+        setSelectedModel(VISION_MODEL);
       }
-      const reader = new FileReader();
-      reader.onloadend = () => {
-        setAttachedImage(reader.result as string);
-        // Auto-switch to vision model if current model doesn't support vision
-        const currentModelInfo = AI_MODELS.find(m => m.id === selectedModel);
-        if (currentModelInfo && !currentModelInfo.vision) {
-          setPreviousModel(selectedModel);
-          setSelectedModel(VISION_MODEL);
-        }
-      };
-      reader.readAsDataURL(file);
+    }
+    // Videos do NOT trigger model auto-switch
+
+    try {
+      const token = await getToken();
+      if (!token) throw new Error("Not authenticated");
+
+      const controller = new AbortController();
+      abortRef.current = controller;
+
+      const result = await uploadAttachment(
+        file,
+        projectId,
+        token,
+        (pct) => setUploadProgress(pct),
+        controller.signal,
+      );
+
+      setAttachedMedia(result);
+      setIsUploading(false);
+    } catch (err: any) {
+      setIsUploading(false);
+      if (err?.message?.includes("401")) {
+        setUploadError("Session expired. Please log in again.");
+      } else {
+        setUploadError(err?.message || "Upload failed. Please try again.");
+      }
     }
   };
 
+  const cancelUpload = () => {
+    abortRef.current?.abort();
+    setIsUploading(false);
+    setUploadProgress(0);
+    setUploadError(null);
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  };
+
+  const retryUpload = () => {
+    setUploadError(null);
+    setUploadProgress(0);
+    if (fileInputRef.current) {
+      fileInputRef.current.value = "";
+    }
+    fileInputRef.current?.click();
+  };
+
   const removeAttachment = () => {
-    setAttachedImage(null);
+    setAttachedMedia(null);
+    setUploadError(null);
+    setUploadProgress(0);
+    setIsUploading(false);
     // Restore previous model if we auto-switched
     if (previousModel) {
       setSelectedModel(previousModel);
@@ -135,10 +197,10 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     if (!prompt.trim() || isGenerating) return;
 
     const userMessage = prompt;
-    const currentImage = attachedImage;
+    const currentMedia = attachedMedia;
 
     setPrompt("");
-    setAttachedImage(null);
+    setAttachedMedia(null);
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     setIsGenerating(true);
     setStatusMessage("Connecting to AI…");
@@ -155,18 +217,33 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       // the stream runs — NOT the raw JSON.
       setMessages((prev) => [...prev, { role: "assistant", content: PLACEHOLDER_GENERATING }]);
 
+      // Build request body — prefer new attachment pipeline over legacy imageBase64
+      const requestBody: Record<string, any> = {
+        prompt: userMessage,
+        model: selectedModel,
+        contextFiles,
+      };
+      if (currentMedia) {
+        requestBody.attachments = [
+          {
+            id: currentMedia.id,
+            url: currentMedia.url,
+            r2Key: currentMedia.r2Key,
+            kind: currentMedia.kind,
+            mimeType: currentMedia.mimeType,
+            filename: currentMedia.filename,
+            sizeBytes: currentMedia.sizeBytes,
+          },
+        ];
+      }
+
       await fetchEventSource(`${WORKER_URL}/api/chat/${projectId}`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          Authorization: `Bearer ${token}`
+          Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          prompt: userMessage,
-          model: selectedModel,
-          contextFiles: contextFiles,
-          imageBase64: currentImage
-        }),
+        body: JSON.stringify(requestBody),
         async onopen() {
           setStatusMessage("AI is generating code…");
         },
@@ -332,31 +409,41 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           />
 
           <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
-            {attachedImage && (
-              <div className="mb-2 relative inline-block">
-                <img src={attachedImage} alt="Attachment" className="h-16 rounded-md border border-white/10" />
-                <button
-                  type="button"
-                  onClick={removeAttachment}
-                  className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
-                {previousModel && (
-                  <div className="mt-1 flex items-center gap-1 text-[10px] text-blue-400">
-                    <Eye className="w-3 h-3" />
-                    <span>Vision model active</span>
-                  </div>
-                )}
+            {/* Upload progress indicator */}
+            {isUploading && (
+              <div className="mb-2">
+                <UploadProgress
+                  filename={fileInputRef.current?.files?.[0]?.name || "file"}
+                  progress={uploadProgress}
+                  error={uploadError}
+                  onCancel={cancelUpload}
+                  onRetry={uploadError ? retryUpload : undefined}
+                />
               </div>
             )}
+
+            {/* Uploaded attachment preview */}
+            {attachedMedia && !isUploading && (
+              <div className="mb-2">
+                <AttachmentPreview
+                  kind={attachedMedia.kind}
+                  url={attachedMedia.url}
+                  filename={attachedMedia.filename}
+                  sizeBytes={attachedMedia.sizeBytes}
+                  isVisionActive={!!previousModel}
+                  onRemove={removeAttachment}
+                />
+              </div>
+            )}
+
             <div className="flex items-center gap-2">
               <input
                 type="file"
-                accept="image/*"
+                accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime,video/x-m4v"
                 className="hidden"
                 ref={fileInputRef}
-                onChange={handleImageUpload}
+                onChange={handleAttachmentUpload}
+                disabled={isUploading}
               />
               <Button
                 type="button"
@@ -364,6 +451,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 size="icon"
                 className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
                 onClick={() => fileInputRef.current?.click()}
+                disabled={isUploading}
+                aria-label="Attach image or video"
+                title="Attach image or video"
               >
                 <Paperclip className="w-4 h-4" />
               </Button>
@@ -377,7 +467,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             <Button
               type="submit"
               size="icon"
-              disabled={!prompt.trim() || isGenerating}
+              disabled={!prompt.trim() || isGenerating || isUploading}
               className="h-8 w-8 rounded-lg bg-primary text-primary-foreground disabled:opacity-50"
             >
               {isGenerating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

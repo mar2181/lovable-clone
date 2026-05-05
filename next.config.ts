@@ -8,9 +8,6 @@ const nextConfig: NextConfig = {
   turbopack: {
     root: path.resolve(__dirname),
   },
-  experimental: {
-    turbopackPersistentCaching: false,
-  },
   reactStrictMode: false,
 };
 
