@@ -60,7 +60,7 @@ function GitHubButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
       onClick={handlePush}
       disabled={state === "pushing"}
     >
@@ -115,7 +115,7 @@ function VercelButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
       onClick={handleDeploy}
       disabled={state === "deploying"}
     >
@@ -154,7 +154,7 @@ export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFi
           <Settings className="w-4 h-4 mr-2" />
           Settings
         </Button>
-        <Button variant="outline" size="sm" className="h-8 bg-white/5 border-white/10">
+        <Button variant="outline" size="sm" className="h-8 bg-white/5 border-white/10 hidden lg:inline-flex">
           <Share className="w-4 h-4 mr-2" />
           Share
         </Button>

@@ -438,13 +438,14 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             }}
           />
 
-          <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
-            {/* Selection chip */}
-            <SelectionChip dimmed={isGenerating} />
+          {/* Above-controls stack: chip + upload progress + uploaded preview.
+              Lifted OUT of the controls row so they can take real vertical
+              space (the row was crushing them to ~0px wide). */}
+          {(selection || isUploading || attachedMedia) && (
+            <div className="flex flex-wrap items-start gap-2 px-2 mt-2">
+              <SelectionChip dimmed={isGenerating} />
 
-            {/* Upload progress indicator */}
-            {isUploading && (
-              <div className="mb-2">
+              {isUploading && (
                 <UploadProgress
                   filename={fileInputRef.current?.files?.[0]?.name || "file"}
                   progress={uploadProgress}
@@ -452,12 +453,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                   onCancel={cancelUpload}
                   onRetry={uploadError ? retryUpload : undefined}
                 />
-              </div>
-            )}
+              )}
 
-            {/* Uploaded attachment preview */}
-            {attachedMedia && !isUploading && (
-              <div className="mb-2">
+              {attachedMedia && !isUploading && (
                 <AttachmentPreview
                   kind={attachedMedia.kind}
                   url={attachedMedia.url}
@@ -466,9 +464,11 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                   isVisionActive={!!previousModel}
                   onRemove={removeAttachment}
                 />
-              </div>
-            )}
+              )}
+            </div>
+          )}
 
+          <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
             <div className="flex items-center gap-2">
               <input
                 type="file"
