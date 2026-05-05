@@ -27,11 +27,7 @@ export type Bindings = {
   VERCEL_API_KEY: string;
   MCP_API_KEY: string;
   R2_PUBLIC_DOMAIN: string;
-  SUPABASE_OAUTH_CLIENT_ID: string;
-  SUPABASE_OAUTH_CLIENT_SECRET: string;
-  SUPABASE_OAUTH_REDIRECT_URI: string;
-  SUPABASE_TOKEN_ENC_KEY: string;
-  OAUTH_STATE_SECRET: string;
+  SUPABASE_PAT: string;
 };
 
 // Define custom variables that persist through the request (like userId)

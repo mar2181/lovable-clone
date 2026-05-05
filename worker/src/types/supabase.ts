@@ -1,33 +1,15 @@
 /**
  * KV record shapes for the Supabase integration.
- * All keys live in KV_METADATA (same namespace as projects/credits/etc.).
+ * All keys live in KV_METADATA.
  *
  * Key naming:
- *   user:{userId}:supabase_refresh     — encrypted refresh token (no TTL)
- *   user:{userId}:supabase_access      — plain access token (TTL = expires_in - 60s)
  *   user:{userId}:supabase_projects_cache — project list cache (60s TTL)
- *   oauth_state:{nonce}                — PKCE verifier + metadata (5min TTL)
  *   project:{projectId}:supabase       — per-project link
  *   project:{projectId}:supabase_schema — cached schema introspection (5min TTL)
  *   project:{projectId}:supabase_migrations — migration history (capped 50)
+ *
+ * Auth: single SUPABASE_PAT secret — no per-user OAuth tokens needed.
  */
-
-/** Encrypted refresh-token record. Refresh tokens are AES-GCM encrypted at rest. */
-export interface SupabaseRefreshRecord {
-  tokenCipher: string;   // AES-GCM ciphertext, base64
-  iv: string;            // base64 IV (12 bytes)
-  obtainedAt: string;    // ISO 8601
-  scopes: string[];      // ["read:organizations", "write:projects", "sql:write", ...]
-  supabaseUserId: string; // sub claim from Supabase OAuth
-  supabaseEmail: string;
-}
-
-/** Cached access-token record (plaintext — short-lived). */
-export interface SupabaseAccessRecord {
-  accessToken: string;
-  expiresAt: string;     // ISO 8601
-  obtainedAt: string;
-}
 
 /** Per-project Supabase link — written when operator picks a project. */
 export interface SupabaseLinkRecord {
@@ -84,22 +66,6 @@ export interface SupabaseMigrationEntry {
 
 export interface SupabaseMigrationRecord {
   history: SupabaseMigrationEntry[];
-}
-
-/** OAuth state stash — stored during the popup handshake. */
-export interface OAuthStateStash {
-  verifier: string;      // PKCE code_verifier
-  userId: string;
-  projectId: string;
-}
-
-/** Returned from /api/supabase/me. */
-export interface SupabaseMeResponse {
-  connected: boolean;
-  supabaseEmail?: string;
-  supabaseUserId?: string;
-  scopes?: string[];
-  obtainedAt?: string;
 }
 
 /** Returned from /api/supabase/projects (list). */

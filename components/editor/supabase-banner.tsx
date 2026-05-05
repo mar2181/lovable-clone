@@ -16,7 +16,7 @@ export function SupabaseBanner({ visible, onReconnect }: SupabaseBannerProps) {
       <div className="flex items-center gap-2">
         <AlertTriangle className="w-4 h-4 text-yellow-400" />
         <span className="text-sm text-yellow-300">
-          Supabase connection expired. Reconnect to continue using the database.
+          Supabase PAT is invalid or expired. Update it in the worker config.
         </span>
       </div>
       <Button

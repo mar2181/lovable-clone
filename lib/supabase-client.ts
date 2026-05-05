@@ -1,14 +1,12 @@
 /**
  * Supabase client — calls OUR worker's /api/supabase/* endpoints.
  *
- * This is NOT the supabase-js package. That package is only used inside
- * generated user projects. This module talks to the worker to orchestrate
- * the OAuth flow, project linking, schema fetching, and SQL execution.
+ * Auth is handled server-side via SUPABASE_PAT — no OAuth popup needed.
+ * This module talks to the worker to orchestrate project linking, schema
+ * fetching, and SQL execution.
  */
 
 import { WORKER_URL } from "./constants";
-
-type FetchFn = typeof fetch;
 
 export interface SupabaseLinkInfo {
   ref: string;
@@ -19,17 +17,9 @@ export interface SupabaseLinkInfo {
   status: "active" | "paused" | "errored";
 }
 
-export interface SupabaseMe {
-  connected: boolean;
-  supabaseEmail?: string;
-  supabaseUserId?: string;
-  scopes?: string[];
-  obtainedAt?: string;
-}
-
 export interface SupabaseConnectStatus {
   linked: boolean;
-  connected: boolean;
+  patConfigured: boolean;
   link?: SupabaseLinkInfo;
 }
 
@@ -65,7 +55,7 @@ async function authFetch(
   token: string,
   opts: RequestInit = {},
 ): Promise<Response> {
-  const res = await fetch(`${WORKER_URL}${path}`, {
+  return fetch(`${WORKER_URL}${path}`, {
     ...opts,
     headers: {
       Authorization: `Bearer ${token}`,
@@ -73,27 +63,6 @@ async function authFetch(
       ...(opts.headers as Record<string, string> || {}),
     },
   });
-  if (res.status === 401) {
-    const body = await res.json().catch(() => ({}));
-    if (body.code === "supabase_reauth_required") {
-      throw new Error("supabase_reauth_required");
-    }
-  }
-  return res;
-}
-
-export async function startOAuth(token: string, projectId: string): Promise<string> {
-  const res = await authFetch(
-    `/api/supabase/oauth/start?projectId=${encodeURIComponent(projectId)}`,
-    token,
-  );
-  if (!res.ok) throw new Error("oauth_start_failed");
-  return (await res.json()).url;
-}
-
-export async function getMe(token: string): Promise<SupabaseMe> {
-  const res = await authFetch("/api/supabase/me", token);
-  return res.json();
 }
 
 export async function getConnectStatus(token: string, projectId: string): Promise<SupabaseConnectStatus> {
@@ -106,21 +75,6 @@ export async function getConnectStatus(token: string, projectId: string): Promis
 
 export async function listProjects(token: string): Promise<SupabaseProject[]> {
   const res = await authFetch("/api/supabase/projects", token);
-  return res.json();
-}
-
-export async function createProject(
-  token: string,
-  name: string,
-  region: string,
-  organization_id: string,
-  db_pass: string,
-): Promise<SupabaseProject> {
-  const res = await authFetch("/api/supabase/projects", token, {
-    method: "POST",
-    body: JSON.stringify({ name, region, organization_id, db_pass }),
-  });
-  if (!res.ok) throw new Error("create_project_failed");
   return res.json();
 }
 
@@ -183,3 +137,4 @@ export async function getMigrationHistory(
   );
   return res.json();
 }
+

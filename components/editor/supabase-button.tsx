@@ -16,7 +16,6 @@ interface SupabaseButtonProps {
 export function SupabaseButton({ projectId, onOpenModal, onOpenMenu, onLinkUpdate }: SupabaseButtonProps) {
   const { getToken } = useAuth();
   const [link, setLink] = useState<SupabaseLinkInfo | null>(null);
-  const [connected, setConnected] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchStatus = useCallback(async () => {
@@ -31,10 +30,8 @@ export function SupabaseButton({ projectId, onOpenModal, onOpenMenu, onLinkUpdat
         setLink(null);
         onLinkUpdate(null);
       }
-      setConnected(status.connected);
     } catch {
       setLink(null);
-      setConnected(false);
     } finally {
       setLoading(false);
     }
@@ -42,18 +39,6 @@ export function SupabaseButton({ projectId, onOpenModal, onOpenMenu, onLinkUpdat
 
   useEffect(() => {
     fetchStatus();
-  }, [fetchStatus]);
-
-  // Listen for OAuth completion from popup
-  useEffect(() => {
-    function onMsg(e: MessageEvent) {
-      if (e.data?.type === "supabase-oauth" && e.data.payload?.ok) {
-        setConnected(true);
-        fetchStatus();
-      }
-    }
-    window.addEventListener("message", onMsg);
-    return () => window.removeEventListener("message", onMsg);
   }, [fetchStatus]);
 
   if (loading) {
