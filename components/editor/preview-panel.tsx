@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
 import { Laptop, Smartphone, ExternalLink, RefreshCw } from "lucide-react";
@@ -121,9 +121,12 @@ function sanitizeIcons(code: string): string {
     allImportedNames.add(defMatch[1]);
   }
 
-  // Find PascalCase names used as JSX self-closing: <Name ... />
+  // Find PascalCase names used as JSX in any form:
+  //   <Name />, <Name>, <Name className="..." />, <Name {...props}>, <Name/>
+  // (The original /<Name\s[^>]*?\/>/ regex required at least one space + attr,
+  //  missing both the bare <Home /> and <Home> non-self-closing cases.)
   const jsxIconUsages = new Set<string>();
-  const jsxRegex = /<([A-Z][a-zA-Z0-9]+)\s[^>]*?\/>/g;
+  const jsxRegex = /<\s*([A-Z][a-zA-Z0-9]*)\b/g;
   let jsxMatch;
   while ((jsxMatch = jsxRegex.exec(code)) !== null) {
     const name = jsxMatch[1];
@@ -433,7 +436,7 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
             files={activeFiles}
             customSetup={{
               dependencies: {
-                "lucide-react": "latest",
+                "lucide-react": "1.7.0",
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",

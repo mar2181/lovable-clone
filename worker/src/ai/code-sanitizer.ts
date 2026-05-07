@@ -256,18 +256,40 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
         }
       }
 
+      // Also collect locally-declared identifiers so we don't try to import them.
+      const declaredNames = new Set<string>();
+      for (const m of code.matchAll(/(?:const|let|var|function|class)\s+([A-Z][a-zA-Z0-9]*)/g)) {
+        declaredNames.add(m[1]);
+      }
+      // Destructured: const { Foo } = bar; const { Foo: Bar } = baz;
+      for (const m of code.matchAll(/(?:const|let|var)\s*\{([^}]+)\}\s*=/g)) {
+        for (const raw of m[1].split(",")) {
+          const piece = raw.trim();
+          const name = piece.includes(":") ? piece.split(":")[1].trim() : piece;
+          if (/^[A-Z][a-zA-Z0-9]*$/.test(name)) declaredNames.add(name);
+        }
+      }
+
       const referenced = new Set<string>();
       // JSX usage: <Home ...> or <Home />
       for (const m of code.matchAll(/<\s*([A-Z][a-zA-Z0-9]*)\b/g)) referenced.add(m[1]);
-      // icon: Home or Icon: Home in object literals
-      for (const m of code.matchAll(/\b[Ii]con\s*:\s*([A-Z][a-zA-Z0-9]*)\b/g)) referenced.add(m[1]);
-      // icon={Home} as JSX prop
-      for (const m of code.matchAll(/\b[Ii]con\s*=\s*\{\s*([A-Z][a-zA-Z0-9]*)\s*\}/g)) referenced.add(m[1]);
+      // ANY object property whose value is a PascalCase identifier:
+      //   { icon: Home }, { Icon: Home }, { serviceIcon: Home, mainIcon: Wrench }
+      // Catches "FooIcon: Home" patterns the old \b[Ii]con\b regex missed.
+      for (const m of code.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*\s*:\s*([A-Z][a-zA-Z0-9]*)\s*[,}\)]/g)) referenced.add(m[1]);
+      // JSX prop value: icon={Home}, Icon={Home}, anyProp={Home}
+      for (const m of code.matchAll(/[A-Za-z_$][A-Za-z0-9_$]*\s*=\s*\{\s*([A-Z][a-zA-Z0-9]*)\s*\}/g)) referenced.add(m[1]);
+      // Array element that's a bare PascalCase identifier: [Home, Wrench, Phone]
+      // Lookahead on the trailing delimiter so adjacent matches don't get skipped.
+      for (const m of code.matchAll(/[\[,]\s*([A-Z][a-zA-Z0-9]*)\s*(?=[,\]])/g)) referenced.add(m[1]);
+      // Variable assignment / function arg: const x = Home;  callFn(Home,
+      for (const m of code.matchAll(/[=\(]\s*([A-Z][a-zA-Z0-9]*)\s*[;,\)]/g)) referenced.add(m[1]);
 
       const missing: string[] = [];
       for (const name of referenced) {
         if (!SAFE_LUCIDE_ICONS.has(name)) continue;
         if (importedNames.has(name)) continue;
+        if (declaredNames.has(name)) continue;
         missing.push(name);
       }
 
@@ -293,11 +315,11 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
     // 7. FIX UNESCAPED APOSTROPHES IN SINGLE-QUOTED STRINGS
     // AI generates strings like: 'We're not just agents' — the apostrophe breaks JS parsing.
     // Solution: Replace ASCII apostrophes in common English contractions with the Unicode
-    // right single quotation mark (U+2019 \u2019). This is typographically correct AND
-    // won't terminate single-quoted JS strings since \u2019 !== \u0027.
+    // right single quotation mark (U+2019 ’). This is typographically correct AND
+    // won't terminate single-quoted JS strings since ’ !== '.
     code = code.replace(
       /\b(We|we|I|They|they|You|you|It|it|He|he|She|she|Don|don|Won|won|Can|can|Shouldn|shouldn|Wouldn|wouldn|Couldn|couldn|Didn|didn|Isn|isn|Aren|aren|Wasn|wasn|Weren|weren|Hasn|hasn|Haven|haven|Hadn|hadn|That|that|There|there|Here|here|What|what|Who|who|Let|let)'(re|ve|ll|t|s|m|d)\b/g,
-      "$1\u2019$2"
+      "$1’$2"
     );
 
     sanitized[filename] = code;
