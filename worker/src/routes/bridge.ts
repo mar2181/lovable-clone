@@ -11,6 +11,7 @@ import { BusinessInfo, ServiceInfo } from '../templates/types';
 import { buildSmartFillPrompt, applySmartFill } from '../ai/smart-fill';
 import { buildBlogContentPrompt, generateBlogPost, generateBlogListing } from '../templates/blog';
 import { createOpenAI } from '@ai-sdk/openai';
+import { sanitizeGeneratedCode } from '../ai/code-sanitizer';
 import { generateText } from 'ai';
 
 const bridgeRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -385,12 +386,14 @@ Make reviews sound like real people in ${biz.city}. Vary styles. Mention specifi
         templateId,
       };
 
+      // Sanitize files (catches missing lucide-react icon imports & broken refs).
+      const sanitizedFiles = sanitizeGeneratedCode(files);
       await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
       await r2.put(`${projectId}/v1.json`, JSON.stringify({
         version: 1,
         createdAt: now,
         prompt: `Intelligence → Template: ${template.name} — ${biz.businessName}`,
-        files,
+        files: sanitizedFiles,
         dependencies,
       }));
       await kv.put(`project:${projectId}:latest_version`, '1');
@@ -423,7 +426,7 @@ Make reviews sound like real people in ${biz.city}. Vary styles. Mention specifi
           type: 'done',
           project,
           version: 1,
-          files,
+          files: sanitizedFiles,
           dependencies,
           intelligence: {
             competitorsAnalyzed: intelligence.passingCompetitors?.length || 0,
