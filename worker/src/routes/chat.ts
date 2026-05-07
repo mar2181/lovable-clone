@@ -375,15 +375,37 @@ Migration rules:
           : null;
 
         if (!modifiedFiles || !modifiedFiles.files || Object.keys(modifiedFiles.files).length === 0) {
-          // Model produced text but it didn't parse to a usable file map.
-          // This is NOT an upstream failure - could be a "no change needed"
-          // edit or a malformed response. Keep the silent done branch so we
-          // don't false-positive on legitimate no-op iterations.
+          // Three distinct upstream conditions land here. Classify and log them
+          // so debugging in `wrangler dev` doesn't require a re-run, and surface
+          // the model's own explanation to the user when one is available.
+          //   1. Parse failure       — modifiedFiles === null (file-parser returned null)
+          //   2. Structured no-op    — modifiedFiles.files === {} + optional noChangesReason
+          //   3. Missing files key   — model returned JSON without a files property
+          let reason: "parse_failure" | "structured_no_op" | "missing_files_key";
+          if (modifiedFiles === null) reason = "parse_failure";
+          else if (modifiedFiles.files === undefined) reason = "missing_files_key";
+          else reason = "structured_no_op";
+
+          // aiMessage: prefer the model's structured explanation; fall back to
+          // the raw prose it returned (truncated). Used by the chat panel.
+          let aiMessage: string | undefined;
+          if (modifiedFiles && typeof modifiedFiles.noChangesReason === "string"
+              && modifiedFiles.noChangesReason.trim()) {
+            aiMessage = modifiedFiles.noChangesReason.trim();
+          } else if (reason === "parse_failure" && fullContent.trim()) {
+            aiMessage = fullContent.trim().slice(0, 400);
+          }
+
+          console.error(
+            `[Chat] Empty files - reason=${reason} project=${projectId} model=${effectiveModel} mode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} rawFirst500=${JSON.stringify(fullContent.slice(0, 500))}`
+          );
+
           const donePayload: Record<string, unknown> = {
             type: "done",
             files: contextFiles,
             dependencies: {},
           };
+          if (aiMessage) donePayload.aiMessage = aiMessage;
           if (aiMigration) (donePayload as any).migration = aiMigration;
           await stream.writeSSE({
             data: JSON.stringify(donePayload),

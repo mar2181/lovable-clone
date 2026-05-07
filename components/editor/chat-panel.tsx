@@ -310,7 +310,12 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                   onMigrationProposed(data.migration as MigrationProposal);
                 }
                 const diff = summarizeChanges(filesAtSubmitRef.current, data.files);
-                finalizeAssistantMessage(buildDoneSummary(diff));
+                // If the worker provided an aiMessage (model's own no-op
+                // explanation, or the prose the model returned when JSON
+                // parsing failed), show that instead of the generic
+                // "Try rephrasing your prompt" string.
+                const aiMessage = typeof data.aiMessage === "string" ? data.aiMessage.trim() : "";
+                finalizeAssistantMessage(aiMessage || buildDoneSummary(diff));
               } else {
                 finalizeAssistantMessage(
                   "Generation finished, but the response could not be parsed into files. Please try again."

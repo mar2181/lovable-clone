@@ -192,7 +192,7 @@ ${SHARED_RULES}
 
 # Iteration Rules
 - The current project files are provided below. Review them before making changes.
-- FIRST check if the user's request has already been implemented. If it has, say so — do not duplicate work.
+- FIRST check if the user's request has already been implemented. If it HAS been implemented, do NOT regenerate any files — emit valid JSON of the form \`{ "files": {}, "noChangesReason": "<one sentence on what already implements this>" }\`. NEVER emit prose, markdown, or any text outside the JSON envelope; the parser will treat it as a parse failure.
 - ONLY include files you are CREATING or MODIFYING. Do not re-emit unchanged files.
 - If adding a new page/section: create it as a new component AND update App.tsx to import/render it.
 - If changing something: modify only the relevant file(s).
