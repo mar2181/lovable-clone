@@ -7,6 +7,7 @@ import { TEMPLATES, getTemplateById, buildTemplateProject } from '../templates';
 import { BusinessInfo } from '../templates/types';
 import { buildSmartFillPrompt, applySmartFill, SmartFillResult } from '../ai/smart-fill';
 import { createOpenAI } from '@ai-sdk/openai';
+import { sanitizeGeneratedCode } from '../ai/code-sanitizer';
 import { generateText } from 'ai';
 
 const templateRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -160,11 +161,14 @@ templateRouter.post('/generate', async (c) => {
             templateId,
           };
 
+          // Sanitize AI-augmented files BEFORE persisting (catches missing
+          // lucide-react icon imports the AI may have introduced).
+          const sanitizedFiles = sanitizeGeneratedCode(files);
           await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
           await r2.put(`${projectId}/v1.json`, JSON.stringify({
             version: 1, createdAt: now,
             prompt: `Template: ${template.name} (Smart Fill) — ${businessInfo.businessName}`,
-            files, dependencies,
+            files: sanitizedFiles, dependencies,
           }));
           await kv.put(`project:${projectId}:latest_version`, '1');
 
@@ -185,7 +189,7 @@ templateRouter.post('/generate', async (c) => {
           ].join('\n');
           await kv.put(`project:${projectId}:memory`, memory);
 
-          return c.json({ project, version: 1, files, dependencies, smartFill: true }, 201);
+          return c.json({ project, version: 1, files: sanitizedFiles, dependencies, smartFill: true }, 201);
         }
       } catch (aiErr) {
         console.error('Smart Fill failed, falling back to basic template:', aiErr);
@@ -208,11 +212,12 @@ templateRouter.post('/generate', async (c) => {
       templateId,
     };
 
+    const sanitizedBasicFiles = sanitizeGeneratedCode(files);
     await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
     await r2.put(`${projectId}/v1.json`, JSON.stringify({
       version: 1, createdAt: now,
       prompt: `Template: ${template.name} — ${businessInfo.businessName}`,
-      files, dependencies,
+      files: sanitizedBasicFiles, dependencies,
     }));
     await kv.put(`project:${projectId}:latest_version`, '1');
 
@@ -229,7 +234,7 @@ templateRouter.post('/generate', async (c) => {
     ].join('\n');
     await kv.put(`project:${projectId}:memory`, memory);
 
-    return c.json({ project, version: 1, files, dependencies, smartFill: false }, 201);
+    return c.json({ project, version: 1, files: sanitizedBasicFiles, dependencies, smartFill: false }, 201);
   } catch (error) {
     console.error('Template generation error:', error);
     return c.json({ error: 'Failed to generate from template' }, 500);
