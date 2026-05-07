@@ -5,6 +5,7 @@ import { authMiddleware } from '../middleware/auth';
 import { BlogTopic, buildBlogContentPrompt, generateBlogPost, generateBlogListing } from '../templates/blog';
 import { createOpenAI } from '@ai-sdk/openai';
 import { generateText } from 'ai';
+import { sanitizeGeneratedCode } from '../ai/code-sanitizer';
 
 const blogRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -161,11 +162,12 @@ blogRouter.post('/batch', async (c) => {
       const latestVersionStr = await kv.get(`project:${projectId}:latest_version`) || '1';
       const newVersionNum = parseInt(latestVersionStr) + 1;
 
+      const sanitizedNewFiles = sanitizeGeneratedCode(newFiles);
       await r2.put(`${projectId}/v${newVersionNum}.json`, JSON.stringify({
         version: newVersionNum,
         createdAt: new Date().toISOString(),
         prompt: `Batch blog generation: ${topics.length} posts`,
-        files: newFiles,
+        files: sanitizedNewFiles,
         dependencies: currentData.dependencies || {},
       }));
       await kv.put(`project:${projectId}:latest_version`, newVersionNum.toString());
@@ -182,7 +184,7 @@ blogRouter.post('/batch', async (c) => {
           success: successCount,
           failed: failCount,
           total: topics.length,
-          files: newFiles,
+          files: sanitizedNewFiles,
           blogSlugs,
         }),
         event: 'message',
