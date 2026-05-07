@@ -177,6 +177,8 @@ DO NOT create: /src/index.tsx, /src/main.tsx, /public/index.html, /package.json,
 - Verify ALL imports point to files that exist. Every imported component must be generated.
 - Verify shadcn/ui imports use correct paths: './components/ui/button' not '@/components/ui/button'.
 - Verify no forbidden icons are used.
+- **EVERY lucide-react icon you reference in JSX (\`<Home />\`), in an object literal (\`icon: Home\`), or as a prop (\`icon={Home}\`) MUST appear in the \`import { ... } from 'lucide-react'\` line of THAT file. A missing icon import red-screens the entire preview.**
+- **EVERY identifier you import from a sibling file (e.g. \`import { PHONE, EMAIL } from '../lib/constants'\`) MUST be a real \`export const ...\` (or \`export function\`/\`export class\`) in that sibling file. If you reference \`{PHONE}\` in JSX, you must also \`export const PHONE = '...'\` in \`/src/lib/constants.ts\`. Imports that don't resolve render as \`undefined\` and break the page.**
 - Every file must be complete and syntactically correct.
 
 Generate AT LEAST 7 files. A typical business website should have 8-14 files.
@@ -205,6 +207,8 @@ ${SHARED_RULES}
 # Validation Before Completing
 - Verify ALL imports in modified files point to files that exist.
 - Verify new components are properly imported where they're used.
+- **EVERY lucide-react icon used in the file (in JSX, in \`icon: X\` object fields, or in \`icon={X}\` props) MUST be present in the \`import { ... } from 'lucide-react'\` line. If you reference \`<Home />\`, \`Home\` must be in the import.**
+- **EVERY identifier imported from a sibling file (e.g. \`{ PHONE } from '../lib/constants'\`) MUST be a real export in that sibling file. If you add a new constant reference like \`{PHONE}\`, also emit the updated constants file with \`export const PHONE = '...'\`.**
 - Do not break existing functionality when adding new features.
 `;
 
