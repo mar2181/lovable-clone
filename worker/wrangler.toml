@@ -10,7 +10,7 @@ bucket_name = "lovable-projects"
 # KV store for user data and credits
 [[kv_namespaces]]
 binding = "KV_METADATA"
-id = "local_dev_kv_placeholder_id"
+id = "762c5fc8290c44259c67922b75fa2d13"
 
 [vars]
 ENVIRONMENT = "development"
