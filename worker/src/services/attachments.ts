@@ -85,6 +85,7 @@ export interface AttachmentPromptEntry {
 
 export function buildAttachmentPromptBlock(
   attachments: AttachmentPromptEntry[],
+  failedFilenames?: string[],
 ): string {
   const entries = attachments
     .map(
@@ -93,9 +94,14 @@ export function buildAttachmentPromptBlock(
     )
     .join("\n\n");
 
+  const failedBlock =
+    failedFilenames && failedFilenames.length > 0
+      ? `\n\n⚠️ IMPORTANT: ${failedFilenames.length > 1 ? "These images" : "This image"} could NOT be loaded from storage and ${failedFilenames.length > 1 ? "were" : "was"} NOT sent to you as vision input: ${failedFilenames.join(", ")}. The URL${failedFilenames.length > 1 ? "s" : ""} above still point${failedFilenames.length > 1 ? "" : "s"} to the correct location${failedFilenames.length > 1 ? "s" : ""} — use the URL${failedFilenames.length > 1 ? "s" : ""} in your code but do NOT attempt to describe or analyze the content of the failed ${failedFilenames.length > 1 ? "images" : "image"}.`
+      : "";
+
   return `The user has attached the following media to this message. Use each URL EXACTLY as provided in the appropriate HTML element's src attribute. Do NOT base64-encode, transcode, or describe the contents — these are real assets the user wants embedded in the generated site.
 
-${entries}
+${entries}${failedBlock}
 
 Embedding rules:
 - For kind=image: use <img src="..." alt="..."> with a meaningful alt derived from the user's prompt or filename.

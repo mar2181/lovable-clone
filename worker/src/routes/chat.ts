@@ -167,11 +167,15 @@ chatRouter.post("/:projectId", async (c) => {
       hasAttachments && attachments.some((a: AttachmentInput) => a.kind === "image");
     // Videos-only does NOT trigger auto-switch (hasOnlyVideoAttachments case).
     let effectiveModel = model;
-    if (imageBase64 || hasImageAttachments) {
+    // Legacy imageBase64 path: the frontend may not have auto-switched to a
+    // vision model, so we force VISION_MODEL as a safety net. For the new
+    // attachment pipeline, the frontend already switches correctly (it checks
+    // each model's vision flag), so we trust the model it sent.
+    if (imageBase64) {
       effectiveModel = VISION_MODEL;
       if (model !== VISION_MODEL) {
         console.log(
-          `Image attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`,
+          `Legacy imageBase64 - auto-switching from ${model} to ${VISION_MODEL} for vision support`,
         );
       }
     }
@@ -287,6 +291,8 @@ Migration rules:
 
         // ── New attachment pipeline (takes priority over legacy imageBase64) ────
         if (hasAttachments) {
+          const failedAttachments: string[] = [];
+
           // Push image attachments as binary for vision models
           if (hasImageAttachments) {
             for (const att of attachments as AttachmentInput[]) {
@@ -300,14 +306,31 @@ Migration rules:
                       image: binary,
                       mimeType: att.mimeType as any,
                     });
+                  } else {
+                    failedAttachments.push(att.filename);
+                    console.warn(
+                      `[Chat] Image attachment ${att.id} (${att.filename}) not found in R2`,
+                    );
                   }
                 } catch (imgErr: any) {
+                  failedAttachments.push(att.filename);
                   console.warn(
                     `[Chat] Could not fetch image attachment ${att.id} from R2: ${imgErr?.message || "unknown"}`,
                   );
                 }
               }
             }
+          }
+
+          // Surface R2 fetch failures to the client so the user knows
+          if (failedAttachments.length > 0) {
+            await stream.writeSSE({
+              data: JSON.stringify({
+                type: "warning",
+                message: `Could not load ${failedAttachments.length > 1 ? "images" : "image"}: ${failedAttachments.join(", ")}. The AI may not have seen ${failedAttachments.length > 1 ? "these" : "this"} attachment${failedAttachments.length > 1 ? "s" : ""}.`,
+              }),
+              event: "message",
+            });
           }
 
           // Build and inject the structured attachment text block for ALL attachments
@@ -318,6 +341,7 @@ Migration rules:
               filename: a.filename,
               publicUrl: a.url,
             })),
+            failedAttachments,
           );
           userContent.push({ type: "text", text: promptBlock });
         }

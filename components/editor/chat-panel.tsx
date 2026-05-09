@@ -214,7 +214,10 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
 
     setPrompt("");
     setAttachedMedia(null);
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+    const userAttachments = currentMedia
+      ? [{ url: currentMedia.url, kind: currentMedia.kind, filename: currentMedia.filename }]
+      : undefined;
+    setMessages((prev) => [...prev, { role: "user", content: userMessage, attachments: userAttachments }]);
     setIsGenerating(true);
     setStatusMessage("Connecting to AI…");
     rawAssistantResponseRef.current = "";
@@ -323,6 +326,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
               }
               setStatusMessage("Done");
 
+            } else if (data.type === "warning") {
+              const msg = typeof data.message === "string" ? data.message : "Attachment warning";
+              toast.warning(msg);
             } else if (data.type === "error") {
               const msg = typeof data.error === "string" && data.error ? data.error : "unknown error";
               finalizeAssistantMessage(`Generation failed: ${msg}`);

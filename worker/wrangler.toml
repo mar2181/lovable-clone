@@ -18,7 +18,7 @@ ENVIRONMENT = "development"
 # R2 public domain for attachment URLs. Set this to your R2 bucket's public
 # custom domain or the r2.dev domain (e.g. "https://pub-<hash>.r2.dev").
 # Without it, attachment uploads will return 500.
-R2_PUBLIC_DOMAIN = ""
+R2_PUBLIC_DOMAIN = "https://pub-e52c67ab7c214282b6a2dd26d84e0cc3.r2.dev"
 
 # Secrets (loaded from .dev.vars for local dev, wrangler secret put for production)
 # CLERK_SECRET_KEY

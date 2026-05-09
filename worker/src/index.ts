@@ -41,7 +41,14 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 app.use(
   "/*",
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "https://localhost:3000"], // Add prod URL later
+    origin: [
+      "http://localhost:3000",
+      "http://localhost:3002",
+      "http://localhost:3003",
+      "https://localhost:3000",
+      "https://hswebappbuilder.space",
+      "https://lovable-clone-*.vercel.app",
+    ],
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE"],
     exposeHeaders: ["Content-Length"],
