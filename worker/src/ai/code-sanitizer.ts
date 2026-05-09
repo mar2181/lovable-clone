@@ -353,12 +353,20 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
       for (const mm of src.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
-      // export function X(...) { ... }
+      // export function X(...) { ... }; export async function X(...) { ... }
       for (const mm of src.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+        exported.add(mm[1]);
+      }
+      // export default function X(...) { ... }; export default async function X(...) { ... }
+      for (const mm of src.matchAll(/export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
       // export class X { ... }
       for (const mm of src.matchAll(/export\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+        exported.add(mm[1]);
+      }
+      // export default class X { ... }
+      for (const mm of src.matchAll(/export\s+default\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
       // export { A, B as C } -> exposes A and C
@@ -385,8 +393,8 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
       const stubLines = [
         "",
         "// Auto-stubbed by sanitizer: these identifiers were imported elsewhere",
-        "// but never exported. Stubbed as empty strings to keep the preview alive.",
-        ...missing.map((n) => `export const ${n} = '';`),
+        "// but never exported. Stubbed as no-op components to keep the preview alive.",
+        ...missing.map((n) => `const ${n} = () => null;\nexport { ${n} };`),
         "",
       ].join("\n");
 

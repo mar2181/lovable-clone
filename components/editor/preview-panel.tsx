@@ -59,6 +59,30 @@ const FORBIDDEN_ICONS = [
   "Spotify", "LinkedIn", "YouTube", "GitHub",
 ];
 
+// Only these names are safe to auto-import from lucide-react when the AI
+// references them in JSX but forgot the import. Any other PascalCase name
+// is a local component and must NOT be added to a lucide-react import.
+const SAFE_LUCIDE_ICONS = new Set([
+  "Phone", "Mail", "MapPin", "Menu", "X",
+  "ChevronRight", "ChevronDown", "ChevronUp",
+  "ArrowRight", "ArrowUp", "ArrowLeft",
+  "Star", "Heart", "Clock", "Calendar",
+  "User", "Users", "Home", "Building", "Building2",
+  "Wrench", "Hammer", "PaintBucket", "Ruler",
+  "Shield", "ShieldCheck", "CheckCircle", "Check",
+  "ExternalLink", "Globe", "Send", "Search",
+  "Plus", "Minus", "Eye", "EyeOff",
+  "Camera", "Image", "Award", "Target", "TrendingUp", "DollarSign",
+  "Loader2", "Settings", "LogOut", "Trash2", "Edit", "Copy",
+  "Download", "Upload", "Share2", "Filter", "SlidersHorizontal",
+  "BarChart3", "PieChart", "Zap", "Sparkles", "Sun", "Moon",
+  "AlertCircle", "Info", "HelpCircle", "MessageCircle", "MessageSquare",
+  "Bookmark", "Tag", "Link", "Palette", "Layers", "Grid", "List",
+  "MoreHorizontal", "MoreVertical", "Play", "Pause",
+  "SquareIcon", "CircleIcon", "Triangle", "Hexagon",
+  "Move", "Maximize2", "Minimize2",
+]);
+
 function sanitizeIcons(code: string): string {
   // Step 1: Clean up forbidden icon imports and replace with Globe
   code = code.replace(
@@ -122,12 +146,15 @@ function sanitizeIcons(code: string): string {
   }
 
   // Find PascalCase names used as JSX self-closing: <Name ... />
+  // Only auto-import names that are KNOWN lucide-react icons — everything
+  // else is a local component and must not be added to a lucide import.
   const jsxIconUsages = new Set<string>();
   const jsxRegex = /<([A-Z][a-zA-Z0-9]+)\s[^>]*?\/>/g;
   let jsxMatch;
   while ((jsxMatch = jsxRegex.exec(code)) !== null) {
     const name = jsxMatch[1];
     if (
+      SAFE_LUCIDE_ICONS.has(name) &&
       !importedIcons.has(name) &&
       !localDeclarations.has(name) &&
       !allImportedNames.has(name) &&
@@ -154,6 +181,18 @@ function sanitizeIcons(code: string): string {
  * Prepare files for Sandpack's react-ts template.
  * Strips /src/ prefix since Sandpack uses flat paths (/App.tsx not /src/App.tsx).
  */
+function isValidSandpackPath(p: string): boolean {
+  if (!p || typeof p !== "string") return false;
+  // Must start with "/" and not contain traversal or null bytes
+  if (!p.startsWith("/")) return false;
+  if (p.includes("..")) return false;
+  if (p.includes("\0")) return false;
+  // Must not be the root path itself
+  if (p === "/") return false;
+  // Must contain at least one real character after the leading /
+  return p.length > 1;
+}
+
 function prepareFilesForSandpack(files: Record<string, string>): Record<string, string> {
   const prepared: Record<string, string> = {};
 
@@ -168,11 +207,15 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
 
   for (const [path, content] of Object.entries(files)) {
     if (SKIP_PATHS.has(path)) continue;
+    if (!isValidSandpackPath(path)) continue;
 
     let sandpackPath = path;
     if (path.startsWith("/src/")) {
       sandpackPath = "/" + path.slice(5);
     }
+
+    // Re-validate after transformation
+    if (!isValidSandpackPath(sandpackPath)) continue;
 
     if (sandpackPath.match(/\.(tsx?|jsx?|js)$/)) {
       prepared[sandpackPath] = sanitizeIcons(content);

@@ -419,8 +419,19 @@ Migration rules:
         // 8. Sanitize AI-generated code (fix bad icon imports, etc.)
         const sanitizedFiles = sanitizeGeneratedCode(modifiedFiles.files);
 
-        // 8.1 Merge files with context (preserves system defaults + prior user files)
-        let mergedFiles = { ...contextFiles, ...sanitizedFiles };
+        // 8.1 Filter out files with illegal paths (empty, relative, no leading /)
+        // Sandpack rejects these with "Unable to add filesystem: <illegal path>".
+        const validFiles: Record<string, string> = {};
+        for (const [path, content] of Object.entries(sanitizedFiles)) {
+          if (!path || typeof path !== "string") continue;
+          if (!path.startsWith("/")) continue;
+          if (path.includes("..")) continue;
+          if (path === "/") continue;
+          validFiles[path] = content;
+        }
+
+        // 8.2 Merge files with context (preserves system defaults + prior user files)
+        let mergedFiles = { ...contextFiles, ...validFiles };
 
         // 8.2 Inject virtual lib/supabase.ts if linked (so Sandpack can use it)
         if (virtualSupabaseLib) {
