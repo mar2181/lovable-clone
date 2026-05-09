@@ -159,7 +159,9 @@ chatRouter.post("/:projectId", async (c) => {
     // If user attached an image (legacy or new), force a vision-capable model.
     // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
     // doesn't lie to the user about which model handled their request.
-    const VISION_MODEL = "openai/gpt-4.1";
+    // Must stay in sync with VISION_MODEL in lib/models.ts — both must be a
+    // vision-capable model that actually exists on OpenRouter.
+    const VISION_MODEL = "google/gemini-3.1-flash-lite";
     const hasAttachments = Array.isArray(attachments) && attachments.length > 0;
     const hasImageAttachments =
       hasAttachments && attachments.some((a: AttachmentInput) => a.kind === "image");
