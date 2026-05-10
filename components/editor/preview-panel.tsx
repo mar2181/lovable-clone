@@ -4,6 +4,8 @@ import { useState, useEffect, useRef, useMemo } from "react";
 import { Laptop, Smartphone, ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { sanitizeIcons, FORBIDDEN_ICONS, FORBIDDEN_LUCIDE_COMPONENT_IMPORTS } from "@/lib/icon-sanitizer";
+import { WORKER_URL } from "@/lib/constants";
 import {
   SandpackProvider,
   SandpackLayout,
@@ -48,39 +50,20 @@ const DEFAULT_APP_CODE = `export default function App() {
 }`;
 
 // Icons that DO NOT exist in lucide-react but AI models keep trying to use
-const FORBIDDEN_ICONS = [
-  "Facebook", "Instagram", "Twitter", "Linkedin", "Youtube", "Github",
-  "Dribbble", "Figma", "Slack", "Discord", "TikTok", "Pinterest",
-  "Snapchat", "WhatsApp", "Telegram", "Reddit", "Medium", "Twitch",
-  "Spotify", "LinkedIn", "YouTube", "GitHub",
-];
+// (re-exported from shared lib for use in the missing-icon auto-fixer below)
+const FORBIDDEN_ICONS_SET = new Set(FORBIDDEN_ICONS);
+const FORBIDDEN_LUCIDE_COMPONENT_IMPORTS_SET = new Set(FORBIDDEN_LUCIDE_COMPONENT_IMPORTS);
 
-function sanitizeIcons(code: string): string {
-  // Step 1: Clean up forbidden icon imports and replace with Globe
-  code = code.replace(
-    /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g,
-    (_match: string, imports: string) => {
-      const iconList = imports.split(",").map((s: string) => s.trim()).filter(Boolean);
-      const cleaned = iconList.filter((icon: string) => !FORBIDDEN_ICONS.includes(icon));
-      const hadForbidden = cleaned.length < iconList.length;
-      if (hadForbidden && !cleaned.includes("Globe")) cleaned.push("Globe");
-      if (cleaned.length === 0) return `import { Globe } from 'lucide-react'`;
-      return `import { ${cleaned.join(", ")} } from 'lucide-react'`;
-    }
-  );
+/**
+ * Full sanitization + auto-fix missing lucide-react icon imports.
+ * The base sanitizeIcons handles forbidden icons.
+ * This adds frontend-specific logic: detecting icons used in JSX but not imported.
+ */
+function sanitizeIconsForPreview(code: string): string {
+  // Run base sanitization first
+  code = sanitizeIcons(code);
 
-  // Step 2: Replace forbidden icon JSX usage with Globe
-  for (const icon of FORBIDDEN_ICONS) {
-    code = code.replace(new RegExp(`<${icon}(\\s[^>]*?)\\s*\\/>`, "g"), `<Globe$1 />`);
-    code = code.replace(new RegExp(`<${icon}(\\s[^>]*)?>`, "g"), `<Globe$1>`);
-    code = code.replace(new RegExp(`<\\/${icon}>`, "g"), `</Globe>`);
-  }
-
-  // Step 3: Replace react-icons and heroicons with lucide Globe
-  code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]react-icons\/[^'"]+['"]\s*;?/g, `import { Globe } from 'lucide-react';`);
-  code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]@heroicons\/[^'"]+['"]\s*;?/g, `import { Globe } from 'lucide-react';`);
-
-  // Step 4: Auto-fix missing lucide-react icon imports
+  // Auto-fix missing lucide-react icon imports
   const existingImportMatch = code.match(/import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/);
   const importedIcons = new Set<string>();
   if (existingImportMatch) {
@@ -101,13 +84,17 @@ function sanitizeIcons(code: string): string {
 
   // Collect all names imported from ANY module
   const allImportedNames = new Set<string>();
-  const importRegex = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g;
+  const namedImportRegex = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g;
   let impMatch;
-  while ((impMatch = importRegex.exec(code)) !== null) {
+  while ((impMatch = namedImportRegex.exec(code)) !== null) {
     impMatch[1].split(",").map(s => s.trim()).filter(Boolean).forEach(name => {
-      const parts = name.split(/\s+as\s+/);
+      const parts = name.split(/\s+as\s+/i);
       allImportedNames.add(parts[parts.length - 1].trim());
     });
+  }
+  const defaultImportRegex = /import\s+([A-Z][a-zA-Z0-9]*)\s+from\s*['"][^'"]+['"]/g;
+  while ((impMatch = defaultImportRegex.exec(code)) !== null) {
+    allImportedNames.add(impMatch[1]);
   }
 
   // Find PascalCase names used as JSX self-closing: <Name ... />
@@ -120,7 +107,8 @@ function sanitizeIcons(code: string): string {
       !importedIcons.has(name) &&
       !localDeclarations.has(name) &&
       !allImportedNames.has(name) &&
-      !FORBIDDEN_ICONS.includes(name)
+      !FORBIDDEN_ICONS_SET.has(name) &&
+      !FORBIDDEN_LUCIDE_COMPONENT_IMPORTS_SET.has(name)
     ) {
       jsxIconUsages.add(name);
     }
@@ -129,7 +117,7 @@ function sanitizeIcons(code: string): string {
   // Add missing icons to the lucide-react import
   if (jsxIconUsages.size > 0 && existingImportMatch) {
     const allIcons = [...importedIcons, ...jsxIconUsages];
-    const newImport = `import { ${allIcons.join(", ")} } from 'lucide-react'`;
+    const newImport = `import { ${allIcons.join(", ")} } from 'lucide-react';`;
     code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]lucide-react['"]/, newImport);
   } else if (jsxIconUsages.size > 0 && !existingImportMatch) {
     const newImport = `import { ${[...jsxIconUsages].join(", ")} } from 'lucide-react';`;
@@ -143,7 +131,50 @@ function sanitizeIcons(code: string): string {
  * Prepare files for Sandpack's react-ts template.
  * Strips /src/ prefix since Sandpack uses flat paths (/App.tsx not /src/App.tsx).
  */
-function prepareFilesForSandpack(files: Record<string, string>): Record<string, string> {
+function applyPreviewAssetDataUrls(code: string, assetDataUrls: Record<string, string>): string {
+  let updated = code;
+  for (const [url, dataUrl] of Object.entries(assetDataUrls)) {
+    updated = updated.replaceAll(url, dataUrl);
+  }
+  return updated;
+}
+
+function extractLocalAssetUrls(files: Record<string, string>): string[] {
+  const urls = new Set<string>();
+  const workerOrigin = WORKER_URL.replace(/\/$/, "");
+  const assetUrlRegex = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+\/assets\/[^\s"'`)}}]+/g;
+
+  for (const content of Object.values(files)) {
+    for (const match of content.matchAll(assetUrlRegex)) {
+      urls.add(match[0]);
+    }
+  }
+
+  // Keep this narrowly scoped to local worker assets. Production HTTPS asset URLs
+  // should remain normal URLs so deployed output is not bloated with data URLs.
+  return Array.from(urls).filter((url) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.pathname.startsWith("/assets/") && (
+        url.startsWith(workerOrigin) ||
+        ["localhost", "127.0.0.1", "0.0.0.0"].includes(parsed.hostname)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error("Failed to read image blob"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function prepareFilesForSandpack(files: Record<string, string>, assetDataUrls: Record<string, string> = {}): Record<string, string> {
   const prepared: Record<string, string> = {};
 
   const SKIP_PATHS = new Set([
@@ -163,10 +194,12 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
       sandpackPath = "/" + path.slice(5);
     }
 
+    const contentWithPreviewAssets = applyPreviewAssetDataUrls(content, assetDataUrls);
+
     if (sandpackPath.match(/\.(tsx?|jsx?|js)$/)) {
-      prepared[sandpackPath] = sanitizeIcons(content);
+      prepared[sandpackPath] = sanitizeIconsForPreview(contentWithPreviewAssets);
     } else {
-      prepared[sandpackPath] = content;
+      prepared[sandpackPath] = contentWithPreviewAssets;
     }
   }
 
@@ -180,6 +213,7 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
 export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [key, setKey] = useState(0);
+  const [assetDataUrls, setAssetDataUrls] = useState<Record<string, string>>({});
 
   const handleRefresh = () => {
     setKey(prev => prev + 1);
@@ -189,6 +223,45 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
     const appContent = files["/src/App.tsx"] || files["/App.tsx"] || "";
     return appContent.length.toString() + "_" + Object.keys(files).length.toString();
   }, [files]);
+
+  const localAssetUrls = useMemo(() => extractLocalAssetUrls(files), [files]);
+  const localAssetFingerprint = localAssetUrls.join("|");
+
+  useEffect(() => {
+    if (localAssetUrls.length === 0) return;
+
+    let cancelled = false;
+
+    async function inlineLocalAssetsForHttpsSandpack() {
+      const loaded: Record<string, string> = {};
+
+      await Promise.all(localAssetUrls.map(async (url) => {
+        if (assetDataUrls[url]) return;
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`Asset fetch failed: ${res.status}`);
+          const contentType = res.headers.get("content-type") || "";
+          if (!contentType.startsWith("image/")) return;
+          loaded[url] = await blobToDataUrl(await res.blob());
+        } catch (error) {
+          console.warn("Could not inline local asset for Sandpack preview", url, error);
+        }
+      }));
+
+      if (!cancelled && Object.keys(loaded).length > 0) {
+        setAssetDataUrls((prev) => ({ ...prev, ...loaded }));
+      }
+    }
+
+    inlineLocalAssetsForHttpsSandpack();
+
+    return () => {
+      cancelled = true;
+    };
+    // assetDataUrls is intentionally excluded to avoid refetch loops; existing URLs are checked inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localAssetFingerprint]);
 
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -200,10 +273,10 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
       setKey(prev => prev + 1);
     }, 800);
     return () => clearTimeout(timer);
-  }, [filesFingerprint]);
+  }, [filesFingerprint, assetDataUrls]);
 
   const sandpackFiles = Object.keys(files).length > 0
-    ? prepareFilesForSandpack(files)
+    ? prepareFilesForSandpack(files, assetDataUrls)
     : { "/App.tsx": DEFAULT_APP_CODE };
 
   const activeFiles: Record<string, string> = {
@@ -299,7 +372,7 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
             files={activeFiles}
             customSetup={{
               dependencies: {
-                "lucide-react": "latest",
+                "lucide-react": "1.7.0",
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",

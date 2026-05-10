@@ -16,7 +16,7 @@ const PAGE_GENERATORS: Record<string, (info: BusinessInfo) => string> = {
 
 /**
  * Build a complete file set for a template + business info.
- * Returns the same shape the Lovable clone expects: { files: Record<string, string>, dependencies: Record<string, string> }
+ * Returns the same shape the HS Solutions expects: { files: Record<string, string>, dependencies: Record<string, string> }
  */
 export function buildTemplateProject(template: TemplateConfig, info: BusinessInfo): { files: Record<string, string>; dependencies: Record<string, string> } {
   const files: Record<string, string> = {};
@@ -41,7 +41,7 @@ export function buildTemplateProject(template: TemplateConfig, info: BusinessInf
 
   // Dependencies
   const dependencies: Record<string, string> = {
-    'lucide-react': 'latest',
+    'lucide-react': '1.7.0',
     'clsx': '^2.1.0',
     'tailwind-merge': '^2.2.1',
   };

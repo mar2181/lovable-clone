@@ -1,4 +1,6 @@
 // Post-processing sanitizer for AI-generated code
+
+import { VALID_LUCIDE_ICONS } from "../data/lucide-valid-icons";
 // Fixes common issues that crash Sandpack previews
 
 // Icons that DO NOT exist in lucide-react but AI models frequently try to use
@@ -122,6 +124,44 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
       const closeTagRegex = new RegExp(`<\\/${icon}>`, "g");
       code = code.replace(closeTagRegex, `</Globe>`);
     }
+
+    // 2.5 VALIDATE LUCIDE-REACT IMPORTS — replace hallucinated icon names.
+    // The AI frequently invents icon names that don't exist in lucide-react
+    // (e.g. "Glove", "BoxingGlove", "Treadmill"). Replace them with Circle.
+    code = code.replace(
+      /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]\s*;?/g,
+      (_match: string, imports: string) => {
+        const iconList = imports.split(",").map((s: string) => s.trim()).filter(Boolean);
+        const cleaned: string[] = [];
+        const replaced = new Map<string, string>();
+        for (const icon of iconList) {
+          const baseName = icon.split(/\s+as\s+/i)[0].trim();
+          if (VALID_LUCIDE_ICONS.has(baseName)) {
+            cleaned.push(icon);
+          } else {
+            if (!replaced.has(baseName)) {
+              replaced.set(baseName, "Circle");
+            }
+          }
+        }
+        if (replaced.size > 0 && !cleaned.some((s: string) => s.split(/\s+as\s+/i).pop()?.trim() === "Circle")) {
+          cleaned.push("Circle");
+        }
+        // Replace JSX usage of hallucinated icons
+        for (const [bad] of replaced) {
+          const selfCloseRe = new RegExp(`<${bad}(?=[\\s/>])([^>]*?)\\s*\\/>`, "g");
+          code = code.replace(selfCloseRe, "<Circle$1 />");
+          const openRe = new RegExp(`<${bad}(?=[\\s>])([^>]*)?>`, "g");
+          code = code.replace(openRe, "<Circle$1>");
+          const closeRe = new RegExp(`<\\/${bad}>`, "g");
+          code = code.replace(closeRe, "</Circle>");
+          code = code.replace(new RegExp(`\\bicon\\s*:\\s*${bad}\\b`, "g"), "icon: Circle");
+          code = code.replace(new RegExp(`\\bIcon\\s*:\\s*${bad}\\b`, "g"), "Icon: Circle");
+        }
+        if (cleaned.length === 0) return "";
+        return `import { ${cleaned.join(", ")} } from 'lucide-react';`;
+      }
+    );
 
     // 3. Kill any react-icons imports entirely (replace with lucide-react Globe)
     code = code.replace(
