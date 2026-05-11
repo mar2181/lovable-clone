@@ -41,7 +41,7 @@ export function buildTemplateProject(template: TemplateConfig, info: BusinessInf
 
   // Dependencies
   const dependencies: Record<string, string> = {
-    'lucide-react': 'latest',
+    'lucide-react': '1.7.0',
     'clsx': '^2.1.0',
     'tailwind-merge': '^2.2.1',
   };

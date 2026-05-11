@@ -476,7 +476,7 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
             files={activeFiles}
             customSetup={{
               dependencies: {
-                "lucide-react": "latest",
+                "lucide-react": "1.7.0",
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",

@@ -1,6 +1,8 @@
 // Post-processing sanitizer for AI-generated code
 // Fixes common issues that crash Sandpack previews
 
+import { VALID_LUCIDE_ICONS } from "../data/lucide-valid-icons";
+
 // Icons that DO NOT exist in lucide-react but AI models frequently try to use
 const FORBIDDEN_ICONS = [
   "Facebook", "Instagram", "Twitter", "Linkedin", "Youtube", "Github",
@@ -347,26 +349,20 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
       const src = sanitized[sourceFile];
       if (typeof src !== "string") continue;
 
-      // Collect existing top-level export identifiers
+      // Collect existing top-level NAMED export identifiers.
+      // Default exports (export default function/class X, export default X) are
+      // NOT named exports — they are tracked separately in defaultExported below.
       const exported = new Set<string>();
       // export const X = ...; export let X = ...; export var X = ...;
       for (const mm of src.matchAll(/export\s+(?:const|let|var)\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
       // export function X(...) { ... }; export async function X(...) { ... }
-      for (const mm of src.matchAll(/export\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-        exported.add(mm[1]);
-      }
-      // export default function X(...) { ... }; export default async function X(...) { ... }
-      for (const mm of src.matchAll(/export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+      for (const mm of src.matchAll(/export\s+(?!default\b)(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
       // export class X { ... }
-      for (const mm of src.matchAll(/export\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
-        exported.add(mm[1]);
-      }
-      // export default class X { ... }
-      for (const mm of src.matchAll(/export\s+default\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+      for (const mm of src.matchAll(/export\s+(?!default\b)class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
         exported.add(mm[1]);
       }
       // export { A, B as C } -> exposes A and C
@@ -379,26 +375,61 @@ export function sanitizeGeneratedCode(files: Record<string, string>): Record<str
           if (exposedAs) exported.add(exposedAs);
         }
       }
-      // export default ... -> only exposed via default import, ignore here
+
+      // Collect DEFAULT-exported names. These are only accessible via
+      // `import X from './file'`, NOT `import { X } from './file'`.
+      const defaultExported = new Set<string>();
+      // export default function X(...) / export default async function X(...)
+      for (const mm of src.matchAll(/export\s+default\s+(?:async\s+)?function\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+        defaultExported.add(mm[1]);
+      }
+      // export default class X { ... }
+      for (const mm of src.matchAll(/export\s+default\s+class\s+([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+        defaultExported.add(mm[1]);
+      }
+      // export default X; (X defined earlier as const/function/class)
+      for (const mm of src.matchAll(/export\s+default\s+(?!(?:async\s+)?function\b|class\b)([A-Za-z_$][A-Za-z0-9_$]*)\s*;?\s*$/gm)) {
+        defaultExported.add(mm[1]);
+      }
 
       const missing: string[] = [];
+      const defaultOnly: string[] = []; // names that exist as default but not named
       for (const name of wanted) {
         if (name === "default") continue;
         if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name)) continue;
-        if (!exported.has(name)) missing.push(name);
+        if (exported.has(name)) continue;
+        if (defaultExported.has(name)) {
+          defaultOnly.push(name);
+        } else {
+          missing.push(name);
+        }
       }
 
-      if (missing.length === 0) continue;
+      if (missing.length === 0 && defaultOnly.length === 0) continue;
 
-      const stubLines = [
-        "",
-        "// Auto-stubbed by sanitizer: these identifiers were imported elsewhere",
-        "// but never exported. Stubbed as no-op components to keep the preview alive.",
-        ...missing.map((n) => `const ${n} = () => null;\nexport { ${n} };`),
-        "",
-      ].join("\n");
+      const appendLines: string[] = [];
+      if (defaultOnly.length > 0) {
+        // Names exist as default exports — add a named re-export so that
+        // `import { X } from './file'` resolves to the real component instead
+        // of getting undefined.
+        appendLines.push(
+          "",
+          "// Auto-added by sanitizer: named re-exports so that named imports",
+          "// resolve to the real default-exported components instead of undefined.",
+          `export { ${defaultOnly.join(", ")} };`,
+        );
+      }
+      if (missing.length > 0) {
+        appendLines.push(
+          "",
+          "// Auto-stubbed by sanitizer: these identifiers were imported elsewhere",
+          "// but never exported. Stubbed as no-op components to keep the preview alive.",
+          ...missing.map((n) => `const ${n} = () => null;\nexport { ${n} };`),
+        );
+      }
+      appendLines.push("");
 
-      sanitized[sourceFile] = src.replace(/\s*$/, "\n") + stubLines;
+      sanitized[sourceFile] = src.replace(/\s*$/, "\n") + appendLines.join("\n");
     }
   }
 
