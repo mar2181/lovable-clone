@@ -1,5 +1,3 @@
-import { VALID_LUCIDE_ICONS } from './lucide-valid-icons';
-
 /**
  * Shared icon sanitization logic.
  * Used by both the backend sanitizer (worker) and frontend preview panel.
