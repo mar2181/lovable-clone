@@ -8,7 +8,7 @@
 
   --color-card: var(--card);
   --color-card-foreground: var(--card-foreground);
-
+h
   --color-popover: var(--popover);
   --color-popover-foreground: var(--popover-foreground);
 
@@ -103,7 +103,6 @@
 
 /* Hide ALL Clerk dev banners */
 div[data-clerk-banner],
-div[class*="cl-internal"],
 div[style*="position: fixed"][style*="z-index"][style*="bottom"] {
   display: none !important;
 }
