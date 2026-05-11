@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { ExportButton } from "@/components/editor/export-button";
 import { BlogGenerator } from "@/components/editor/blog-generator";
 import { WORKER_URL } from "@/lib/constants";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 
 function GitHubButton({ projectId }: { projectId: string }) {
   const [state, setState] = useState<"idle" | "pushing" | "done" | "error">("idle");

@@ -1,65 +1,70 @@
 import { Context, Next } from "hono";
 import { jwtVerify, createRemoteJWKSet } from "jose";
-import { registerOwnerIfAdmin } from "../services/credits";
+
+// Cache JWKS per Clerk domain to avoid recreating on every request
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+
+function getJWKS(clerkDomain: string) {
+  if (!jwksCache.has(clerkDomain)) {
+    const jwksUrl = new URL(`https://${clerkDomain}/.well-known/jwks.json`);
+    jwksCache.set(clerkDomain, createRemoteJWKSet(jwksUrl));
+  }
+  return jwksCache.get(clerkDomain)!;
+}
 
 export async function authMiddleware(c: Context, next: Next) {
   const authHeader = c.req.header("Authorization");
-  
+  const env = c.env.ENVIRONMENT;
+  const devToken = "dev-local-user";
+
+  // Local dev bypass: allow the localhost frontend even if Clerk is not configured
+  // or the compiled frontend sends an older/empty dev token.
+  if (env === "development") {
+    c.set("userId", devToken);
+    await next();
+    return;
+  }
+
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return c.json({ error: "Unauthorized - No token provided" }, 401);
   }
 
   const token = authHeader.split(" ")[1];
-  const clerkPublishableKey = c.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
 
-  if (!clerkPublishableKey) {
-    console.warn("Clerk Publishable Key is missing in environment");
-    // During local dev, if keys are missing we might want to bypass or mock, 
-    // but for production this should strictly fail
+  // CLERK_DOMAIN is the Clerk frontend API domain (e.g. "clerk.your-app.com")
+  // or the issuer URL without protocol (e.g. "clerk.your-app.com")
+  const clerkDomain = c.env.CLERK_DOMAIN;
+
+  if (!clerkDomain) {
+    console.error("CLERK_DOMAIN is missing in worker environment");
     return c.json({ error: "Server Configuration Error" }, 500);
   }
 
-  // Extract the JWKS URL from the publishable key format
-  // Clerk publishable keys look like: pk_test_Y2xlcmu...
   try {
-    // This is a simplified validation. In a real production environment,
-    // you would verify the JWT against Clerk's JWKS endpoint:
-    // https://<YOUR_CLERK_DOMAIN>/.well-known/jwks.json
-    
-    // For local dev without a real domain, we are extracting the userId directly
-    // This assumes the frontend is sending a valid Clerk token
-    
-    // WARNING: In production, MUST use proper jose jwtVerify with remote JWKS
-    // const JWKS = createRemoteJWKSet(new URL(`https://${clerkDomain}/.well-known/jwks.json`))
-    // const { payload } = await jwtVerify(token, JWKS)
-    
-    // For now, we'll try to extract the user ID assuming token is valid (Dev mode fallback)
-    // A robust implementation would use Clerk's backend SDK (which isn't fully Edge compatible)
-    // or properly configure the JWKS URL
-    
-    // Temporary dev-mode parsing (NOT SECURE FOR PROD)
-    const base64Url = token.split('.')[1];
-    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
-    const jsonPayload = decodeURIComponent(atob(base64).split('').map(function(c) {
-        return '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2);
-    }).join(''));
-    
-    const payload = JSON.parse(jsonPayload);
-    
-    // Clerk usually stores user id in 'sub'
+    const JWKS = getJWKS(clerkDomain);
+    const issuer = `https://${clerkDomain}`;
+
+    const { payload } = await jwtVerify(token, JWKS, {
+      issuer,
+    });
+
     if (!payload.sub) {
-       return c.json({ error: "Invalid token structure" }, 401);
+      return c.json({ error: "Invalid token structure" }, 401);
     }
-    
+
     c.set("userId", payload.sub);
 
     // Register owner/admin accounts for unlimited credits
-    const email = payload.email || payload.primary_email || payload.email_addresses?.[0]?.email_address;
+    const email =
+      (payload.email as string) ||
+      (payload.primary_email as string) ||
+      (payload.email_addresses as any)?.[0]?.email_address;
+    const { registerOwnerIfAdmin } = await import("../services/credits");
     registerOwnerIfAdmin(payload.sub, email);
 
     await next();
-  } catch (error) {
-    console.error("Auth error:", error);
+  } catch (error: any) {
+    console.error("Auth JWT verification failed:", error?.code || error?.message || error);
     return c.json({ error: "Unauthorized - Invalid token" }, 401);
   }
 }

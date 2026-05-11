@@ -11,7 +11,7 @@ export function Footer() {
               <div className="bg-primary/20 p-1.5 rounded-lg border border-primary/30">
                 <Sparkles className="w-5 h-5 text-primary" />
               </div>
-              <span className="font-bold text-xl tracking-tight text-white">Lovable Clone</span>
+              <span className="font-bold text-xl tracking-tight text-white">HS Solutions</span>
             </Link>
             <p className="text-muted-foreground w-full md:max-w-xs">
               The AI app builder that turns your ideas into production-ready React code.
@@ -41,7 +41,7 @@ export function Footer() {
         </div>
         
         <div className="border-t border-white/5 mt-12 pt-8 flex flex-col md:flex-row items-center justify-between text-sm text-muted-foreground">
-          <p>© {new Date().getFullYear()} Lovable Clone. All rights reserved.</p>
+          <p>© {new Date().getFullYear()} HS Solutions. All rights reserved.</p>
           <div className="flex items-center gap-4 mt-4 md:mt-0">
             <Link href="#" className="hover:text-white transition-colors">Privacy Policy</Link>
             <Link href="#" className="hover:text-white transition-colors">Terms of Service</Link>

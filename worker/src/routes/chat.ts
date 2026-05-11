@@ -14,6 +14,33 @@ const chatRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 chatRouter.use("*", authMiddleware);
 
+// System-managed file paths. These ship in defaultFiles when a project is
+// created and should NOT be sent to the model as iteration context (the
+// system prompt explicitly forbids the model from creating/modifying them).
+const SYSTEM_MANAGED_PATHS = new Set<string>([
+  "/src/index.tsx",
+  "/src/main.tsx",
+  "/src/index.ts",
+  "/src/main.ts",
+  "/src/styles.css",
+  "/src/index.css",
+  "/public/index.html",
+  "/package.json",
+]);
+
+const SHADCN_PREFIX = "/src/components/ui/";
+
+function stripSystemFiles(files: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(files)) {
+    if (SYSTEM_MANAGED_PATHS.has(k)) continue;
+    if (k.startsWith(SHADCN_PREFIX)) continue;
+    if (k.startsWith("/src/lib/utils.ts")) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 chatRouter.post("/:projectId", async (c) => {
   const userId = c.get("userId");
   const projectId = c.req.param("projectId");
@@ -29,11 +56,25 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "moonshotai/kimi-k2", contextFiles, imageBase64 } = body;
+    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64, imagesBase64 } = body;
+    // Support both multi-image array (imagesBase64) and legacy single (imageBase64)
+    const imageList: string[] = imagesBase64 && Array.isArray(imagesBase64)
+      ? imagesBase64.slice(0, 10) // cap at 10
+      : imageBase64 ? [imageBase64] : [];
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
     if (!projectExists) return c.json({ error: "Project not found" }, 404);
+
+    // 3.1 Detect SCAFFOLD vs ITERATION mode using server-side state.
+    // A brand-new project has latest_version === "1" (the "Initial Setup"
+    // version written at project creation, which only contains system files).
+    // Any successful AI generation bumps it to 2+. So:
+    //   - latest_version null/1  -> first user prompt -> SCAFFOLD
+    //   - latest_version >= 2    -> user has generated something -> ITERATION
+    const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
+    const latestVersion = parseInt(latestVersionStr || "1");
+    const isFirstPrompt = !latestVersionStr || latestVersion < 2;
 
     // 3.5 Load project memory and chat history
     const projectMemory = await kv.get(`project:${projectId}:memory`) || "";
@@ -46,24 +87,40 @@ chatRouter.post("/:projectId", async (c) => {
       baseURL: "https://openrouter.ai/api/v1",
     });
 
-    // Model ID comes directly from frontend
-    const aiModel = openrouter(model);
+    // If user attached an image, force a vision-capable model.
+    // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
+    // doesn't lie to the user about which model handled their request.
+    const VISION_MODEL = "openai/gpt-4.1";
+    const effectiveModel = imageList.length > 0 ? VISION_MODEL : model;
 
-    // 5. Detect first prompt vs iteration
-    const hasExistingFiles = contextFiles && Object.keys(contextFiles).length > 0;
-    const basePrompt = hasExistingFiles ? ITERATION_PROMPT : SCAFFOLD_PROMPT;
+    if (imageList.length > 0 && model !== VISION_MODEL) {
+      console.log(`${imageList.length} image(s) attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`);
+    }
+
+    // Model ID comes from frontend (or auto-switched for vision)
+    const aiModel = openrouter(effectiveModel);
+
+    // 5. Pick the system prompt based on first-prompt detection (server-side,
+    // not based on whatever context the client claims).
+    const basePrompt = isFirstPrompt ? SCAFFOLD_PROMPT : ITERATION_PROMPT;
+    console.log(`[Chat] project=${projectId} mode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`);
 
     // 5.1 Construct full system prompt with memory, history, and context
     const memoryBlock = projectMemory
-      ? `\n# PROJECT MEMORY (IMPORTANT — read this before doing anything)\nThe user has defined the following context for this project. ALWAYS respect this:\n${projectMemory}\n`
+      ? `\n# PROJECT MEMORY (IMPORTANT - read this before doing anything)\nThe user has defined the following context for this project. ALWAYS respect this:\n${projectMemory}\n`
       : "";
 
     const historyBlock = chatHistory.length > 0
       ? `\n# RECENT CONVERSATION HISTORY (last ${chatHistory.length} exchanges)\nThis is what has been discussed/built recently. Use this to stay consistent:\n${chatHistory.map((h, i) => `${i + 1}. [${h.role}]: ${h.summary}`).join("\n")}\n`
       : "";
 
-    const contextBlock = hasExistingFiles
-      ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(contextFiles, null, 2)}\n`
+    // For ITERATION mode, send only the AI-authored files as context - never
+    // the system-managed scaffolding (index.tsx, package.json, shadcn/ui, etc).
+    // For SCAFFOLD mode, send no context block at all so the model treats this
+    // as greenfield.
+    const userFiles = !isFirstPrompt && contextFiles ? stripSystemFiles(contextFiles) : {};
+    const contextBlock = !isFirstPrompt && Object.keys(userFiles).length > 0
+      ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(userFiles, null, 2)}\n`
       : "";
 
     const fullSystemPrompt = `
@@ -78,9 +135,13 @@ chatRouter.post("/:projectId", async (c) => {
     return streamSSE(c, async (stream) => {
       try {
         const userContent: any[] = [{ type: "text", text: prompt }];
-        if (imageBase64) {
-          const base64Data = imageBase64.includes(",") ? imageBase64.split(",")[1] : imageBase64;
-          userContent.push({ type: "image", image: base64Data });
+        // Attach all images (up to 10). AI SDK v6 requires Uint8Array + mimeType.
+        for (const imgData of imageList) {
+          const mimeMatch = imgData.match(/^data:([^;]+);/);
+          const mimeType = (mimeMatch ? mimeMatch[1] : "image/jpeg") as any;
+          const base64Data = imgData.includes(",") ? imgData.split(",")[1] : imgData;
+          const binary = Uint8Array.from(atob(base64Data), (ch) => ch.charCodeAt(0));
+          userContent.push({ type: "image", image: binary, mimeType });
         }
 
         const result = await streamText({
@@ -100,16 +161,58 @@ chatRouter.post("/:projectId", async (c) => {
           });
         }
 
+        // 6.5 Detect upstream model failure.
+        // The AI SDK can silently yield an empty stream when OpenRouter rejects
+        // the request (e.g. invalid model ID, auth failure, upstream 4xx) instead
+        // of throwing. Treat an empty raw stream as a hard generation error so
+        // the user sees a real message instead of a misleading "no files changed".
+        if (!fullContent || fullContent.trim().length === 0) {
+          console.error(`[Chat] Empty stream from model "${effectiveModel}" - likely invalid model ID or upstream rejection.`);
+          await stream.writeSSE({
+            data: JSON.stringify({
+              type: "error",
+              error: `model returned an empty response or invalid model ID (${effectiveModel}).`,
+            }),
+            event: "error",
+          });
+          return;
+        }
+
         // 7. Parse final completed JSON
         const modifiedFiles = parseStreamToJSON(fullContent);
 
         if (!modifiedFiles || !modifiedFiles.files || Object.keys(modifiedFiles.files).length === 0) {
+          // Three distinct upstream conditions land here. Classify and log them
+          // so debugging in `wrangler dev` doesn't require a re-run, and surface
+          // the model's own explanation to the user when one is available.
+          //   1. Parse failure       — modifiedFiles === null (file-parser returned null)
+          //   2. Structured no-op    — modifiedFiles.files === {} + optional noChangesReason
+          //   3. Missing files key   — model returned JSON without a files property
+          let reason: "parse_failure" | "structured_no_op" | "missing_files_key";
+          if (modifiedFiles === null) reason = "parse_failure";
+          else if (modifiedFiles.files === undefined) reason = "missing_files_key";
+          else reason = "structured_no_op";
+
+          let aiMessage: string | undefined;
+          if (modifiedFiles && typeof modifiedFiles.noChangesReason === "string"
+              && modifiedFiles.noChangesReason.trim()) {
+            aiMessage = modifiedFiles.noChangesReason.trim();
+          } else if (reason === "parse_failure" && fullContent.trim()) {
+            aiMessage = fullContent.trim().slice(0, 400);
+          }
+
+          console.error(
+            `[Chat] Empty files - reason=${reason} model=${effectiveModel} rawFirst500=${JSON.stringify(fullContent.slice(0, 500))}`
+          );
+
+          const donePayload: Record<string, unknown> = {
+            type: "done",
+            files: contextFiles,
+            dependencies: {},
+          };
+          if (aiMessage) donePayload.aiMessage = aiMessage;
           await stream.writeSSE({
-            data: JSON.stringify({
-              type: "done",
-              files: contextFiles,
-              dependencies: {},
-            }),
+            data: JSON.stringify(donePayload),
             event: "message",
           });
           return;
@@ -118,13 +221,13 @@ chatRouter.post("/:projectId", async (c) => {
         // 8. Sanitize AI-generated code (fix bad icon imports, etc.)
         const sanitizedFiles = sanitizeGeneratedCode(modifiedFiles.files);
 
-        // 8.1 Merge files with context
+        // 8.1 Merge files with context (preserves system defaults + prior user files)
         let mergedFiles = { ...contextFiles, ...sanitizedFiles };
 
         // 8.5 Generate AI images via fal.ai (replace FAL_IMAGE[] placeholders)
         try {
           await stream.writeSSE({
-            data: JSON.stringify({ type: "chunk", content: "\n\n🎨 Generating AI images..." }),
+            data: JSON.stringify({ type: "chunk", content: "\n\nGenerating AI images..." }),
             event: "message",
           });
           mergedFiles = await replaceImagePlaceholders(mergedFiles, c.env.FAL_KEY);
@@ -132,9 +235,8 @@ chatRouter.post("/:projectId", async (c) => {
           console.error("Image generation failed (continuing without images):", imgErr);
         }
 
-        // 9. Create new Version
-        const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
-        const newVersionNum = parseInt(latestVersionStr || "1") + 1;
+        // 9. Create new Version (reuse latestVersion read above)
+        const newVersionNum = latestVersion + 1;
 
         const newVersionData = {
           version: newVersionNum,
@@ -180,17 +282,23 @@ chatRouter.post("/:projectId", async (c) => {
         });
 
       } catch (error: any) {
-        console.error("Streaming error:", error);
-        await stream.writeSSE({
-          data: JSON.stringify({ type: "error", error: error.message }),
-          event: "error",
-        });
+        console.error("[Chat] Stream error:", error);
+        try {
+          await stream.writeSSE({
+            data: JSON.stringify({
+              type: "error",
+              error: error.message || "An unexpected error occurred during generation.",
+            }),
+            event: "error",
+          });
+        } catch (_) {
+          // stream may already be closed
+        }
       }
     });
-
-  } catch (error) {
-    console.error("Failed to start chat session:", error);
-    return c.json({ error: "Failed to initialize AI session" }, 500);
+  } catch (error: any) {
+    console.error("[Chat] Route error:", error);
+    return c.json({ error: "Internal server error" }, 500);
   }
 });
 

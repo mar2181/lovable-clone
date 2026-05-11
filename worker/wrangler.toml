@@ -15,7 +15,14 @@ id = "local_dev_kv_placeholder_id"
 [vars]
 ENVIRONMENT = "development"
 
-# Secrets (loaded from .dev.vars for local dev)
-# CLERK_SECRET_KEY
-# OPENROUTER_API_KEY
-# FAL_KEY
+# Secrets (loaded from .dev.vars for local dev, or wrangler secret put for production)
+# Required:
+#   CLERK_DOMAIN                — Clerk frontend API domain (no protocol)
+#   CLERK_SECRET_KEY            — from Clerk Dashboard
+#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — from Clerk Dashboard
+#   OPENROUTER_API_KEY          — from openrouter.ai/keys
+#   FAL_KEY                     — from fal.ai/dashboard/keys
+# Optional:
+#   GITHUB_PAT                  — from github.com/settings/tokens
+#   VERCEL_API_KEY              — from vercel.com/account/tokens
+#   ALLOWED_ORIGINS             — comma-separated extra CORS origins

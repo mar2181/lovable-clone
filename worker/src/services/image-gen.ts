@@ -1,46 +1,78 @@
 ﻿// fal.ai image generation service
-// Uses flux-schnell for fast (~2-3s) image generation
+// Uses FLUX pro first for quality, then falls back to schnell for speed/resilience.
 
-const FAL_API_URL = "https://fal.run/fal-ai/flux/schnell";
+import { storeRemoteImageAsset } from "./assets";
+
+const DEFAULT_FAL_ENDPOINT = "https://fal.run/fal-ai/flux-pro/v1.1-ultra";
+const FALLBACK_FAL_ENDPOINT = "https://fal.run/fal-ai/flux/schnell";
+
+type ImageSize = "landscape_16_9" | "square" | "portrait_4_3";
 
 interface FalImageResult {
   images: Array<{
     url: string;
-    width: number;
-    height: number;
-    content_type: string;
+    width?: number;
+    height?: number;
+    content_type?: string;
   }>;
 }
 
-export async function generateImage(
-  falKey: string,
-  prompt: string,
-  size: "landscape_16_9" | "square" | "portrait_4_3" = "landscape_16_9"
-): Promise<string | null> {
-  try {
-    // Abort after 8 seconds to prevent hanging the entire response
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 8000);
+type ImageAssetOptions = {
+  r2: R2Bucket;
+  projectId: string;
+  publicBaseUrl: string;
+};
 
-    const res = await fetch(FAL_API_URL, {
+function aspectRatioFor(size: ImageSize): string {
+  if (size === "square") return "1:1";
+  if (size === "portrait_4_3") return "3:4";
+  return "16:9";
+}
+
+function promptForQuality(prompt: string): string {
+  return `${prompt}, premium commercial photography, realistic lighting, sharp focus, natural composition, high-end editorial quality, no text artifacts, no distorted faces, no extra fingers`;
+}
+
+async function callFalEndpoint(args: {
+  falKey: string;
+  endpoint: string;
+  prompt: string;
+  size: ImageSize;
+  timeoutMs: number;
+}): Promise<string | null> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), args.timeoutMs);
+
+  try {
+    const isUltra = args.endpoint.includes("flux-pro/v1.1-ultra");
+    const body = isUltra
+      ? {
+          prompt: promptForQuality(args.prompt),
+          aspect_ratio: aspectRatioFor(args.size),
+          num_images: 1,
+          output_format: "jpeg",
+          safety_tolerance: "4",
+          enhance_prompt: true,
+        }
+      : {
+          prompt: promptForQuality(args.prompt),
+          image_size: args.size,
+          num_images: 1,
+          enable_safety_checker: false,
+        };
+
+    const res = await fetch(args.endpoint, {
       method: "POST",
       headers: {
-        Authorization: `Key ${falKey}`,
+        Authorization: `Key ${args.falKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        prompt: `${prompt}, professional photography, high quality, 4k`,
-        image_size: size,
-        num_images: 1,
-        enable_safety_checker: false,
-      }),
+      body: JSON.stringify(body),
       signal: controller.signal,
     });
 
-    clearTimeout(timeoutId);
-
     if (!res.ok) {
-      console.error("fal.ai error:", res.status, await res.text());
+      console.error("fal.ai error:", args.endpoint, res.status, await res.text());
       return null;
     }
 
@@ -48,12 +80,38 @@ export async function generateImage(
     return data.images?.[0]?.url || null;
   } catch (err: any) {
     if (err.name === "AbortError") {
-      console.error("fal.ai request timed out after 8s");
+      console.error(`fal.ai request timed out after ${args.timeoutMs}ms`, args.endpoint);
     } else {
-      console.error("fal.ai request failed:", err);
+      console.error("fal.ai request failed:", args.endpoint, err);
     }
     return null;
+  } finally {
+    clearTimeout(timeoutId);
   }
+}
+
+export async function generateImage(
+  falKey: string,
+  prompt: string,
+  size: ImageSize = "landscape_16_9"
+): Promise<string | null> {
+  const primary = await callFalEndpoint({
+    falKey,
+    endpoint: DEFAULT_FAL_ENDPOINT,
+    prompt,
+    size,
+    timeoutMs: 30000,
+  });
+
+  if (primary) return primary;
+
+  return callFalEndpoint({
+    falKey,
+    endpoint: FALLBACK_FAL_ENDPOINT,
+    prompt,
+    size,
+    timeoutMs: 12000,
+  });
 }
 
 // Placeholder marker format used in AI-generated code
@@ -61,12 +119,13 @@ const IMAGE_PLACEHOLDER_REGEX = /FAL_IMAGE\[([^\]]+)\]/g;
 
 /**
  * Scans all files for FAL_IMAGE[description] markers,
- * generates real images via fal.ai, and replaces markers with URLs.
- * Has a global timeout of 15 seconds to prevent blocking the response.
+ * generates real images via fal.ai, stores successful remote images into R2,
+ * and replaces markers with app-owned asset URLs.
  */
 export async function replaceImagePlaceholders(
   files: Record<string, string>,
-  falKey: string
+  falKey: string,
+  assetOptions?: ImageAssetOptions
 ): Promise<Record<string, string>> {
   // Collect all unique image descriptions across all files
   const placeholders = new Map<string, string>(); // marker -> description
@@ -88,17 +147,27 @@ export async function replaceImagePlaceholders(
   const entries = Array.from(placeholders.entries());
 
   try {
-    // Global timeout: if all image generation takes more than 15s, skip it
+    // Quality images can take longer than schnell. Keep bounded but don't force ugly fallback too early.
     const globalTimeout = new Promise<void>((_, reject) =>
-      setTimeout(() => reject(new Error("Global image generation timeout (15s)")), 15000)
+      setTimeout(() => reject(new Error("Global image generation timeout (45s)")), 45000)
     );
 
     const imageWork = Promise.allSettled(
       entries.map(async ([marker, description]) => {
-        const url = await generateImage(falKey, description);
-        if (url) {
-          imageResults.set(marker, url);
+        const remoteUrl = await generateImage(falKey, description);
+        if (!remoteUrl) return;
+
+        if (assetOptions) {
+          const asset = await storeRemoteImageAsset({
+            ...assetOptions,
+            remoteUrl,
+            filenameHint: description,
+          });
+          imageResults.set(marker, asset?.url || remoteUrl);
+          return;
         }
+
+        imageResults.set(marker, remoteUrl);
       })
     );
 
@@ -107,13 +176,13 @@ export async function replaceImagePlaceholders(
     console.error("Image generation timed out or failed:", err);
   }
 
-  // Replace successful placeholders in all files
-  // For failed ones, replace with a placeholder image URL
+  // Replace successful placeholders in all files.
+  // For failed ones, use a visible placeholder so failure is obvious in preview.
   const updatedFiles: Record<string, string> = {};
   for (const [filename, content] of Object.entries(files)) {
     let updatedContent = content;
     for (const [marker] of placeholders.entries()) {
-      const url = imageResults.get(marker) || "https://placehold.co/1200x600/1e293b/f59e0b?text=Image+Unavailable";
+      const url = imageResults.get(marker) || "https://placehold.co/1200x675/1e293b/f59e0b?text=Image+Generation+Failed";
       updatedContent = updatedContent.replaceAll(marker, url);
     }
     updatedFiles[filename] = updatedContent;

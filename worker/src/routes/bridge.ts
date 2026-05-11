@@ -1,4 +1,4 @@
-// Intelligence Bridge — connects Mission Control's Phase 1 research to Lovable's template system
+// Intelligence Bridge — connects Mission Control's Phase 1 research to HS Solutions template system
 // Calls Mission Control's factory API, extracts the research data, and feeds it into Smart Fill + templates
 
 import { Hono } from 'hono';
@@ -65,7 +65,7 @@ interface IntelligenceReport {
 /**
  * POST /api/bridge/research-to-template
  * 
- * Takes Mission Control intelligence data and generates a Lovable project from it.
+ * Takes Mission Control intelligence data and generates a HS Solutions project from it.
  * This is the "best of both worlds" route.
  * 
  * Body: {
@@ -411,7 +411,7 @@ Make reviews sound like real people in ${biz.city}. Vary styles. Mention specifi
         `Geo Pages Available: ${geoSummary}`,
         `UVP Angles: ${intelligence.uvpAngles?.map(u => u.angle).join(', ') || 'none'}`,
         '',
-        'Generated from Mission Control intelligence → Lovable template.',
+        'Generated from Mission Control intelligence → HS Solutions template.',
         'Content was enhanced with competitor research.',
         'Use chat to customize further. Geo pages can be added via chat.',
       ].join('\n');

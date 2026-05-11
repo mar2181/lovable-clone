@@ -11,6 +11,8 @@ import vercelRouter from "./routes/vercel";
 import templateRouter from "./routes/template";
 import blogRouter from "./routes/blog";
 import bridgeRouter from "./routes/bridge";
+import buildRouter from "./routes/build";
+import assetsRouter from "./routes/assets";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -18,11 +20,15 @@ export type Bindings = {
   KV_METADATA: KVNamespace;
   CLERK_SECRET_KEY: string;
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: string;
+  CLERK_DOMAIN: string; // Clerk frontend API domain (e.g. "clerk.your-app.com")
   OPENROUTER_API_KEY: string;
+  OPENAI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
   FAL_KEY: string;
   ENVIRONMENT: string;
   GITHUB_PAT: string;
   VERCEL_API_KEY: string;
+  ALLOWED_ORIGINS: string; // Comma-separated list of allowed CORS origins
 };
 
 // Define custom variables that persist through the request (like userId)
@@ -36,7 +42,33 @@ const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 app.use(
   "/*",
   cors({
-    origin: ["http://localhost:3000", "http://localhost:3001", "http://localhost:3002", "http://localhost:3003", "https://localhost:3000"], // Add prod URL later
+    origin: (origin, c) => {
+      // Always allow local dev frontends on any port.
+      // WSL/Windows often requires moving ports when another local service is already bound.
+      if (
+        origin &&
+        /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(:\d+)?$/.test(origin)
+      ) {
+        return origin;
+      }
+
+      // Allow any *.vercel.app subdomain
+      if (origin && /^https:\/\/[a-z0-9-]+\.vercel\.app$/.test(origin)) {
+        return origin;
+      }
+
+      // Allow configured extra origins (comma-separated)
+      const envOrigins = (c.env as any).ALLOWED_ORIGINS;
+      if (envOrigins) {
+        const allowed = envOrigins.split(",").map((s: string) => s.trim());
+        if (allowed.includes(origin)) {
+          return origin;
+        }
+      }
+
+      // Deny — return undefined (CORS headers won't be set)
+      return undefined;
+    },
     allowHeaders: ["Content-Type", "Authorization"],
     allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE"],
     exposeHeaders: ["Content-Length"],
@@ -55,9 +87,12 @@ app.route("/api/vercel", vercelRouter);
 app.route("/api/template", templateRouter);
 app.route("/api/blog", blogRouter);
 app.route("/api/bridge", bridgeRouter);
+app.route("/api/build", buildRouter);
+app.route("/api/assets", assetsRouter);
+app.route("/assets", assetsRouter);
 
 app.get("/", (c) => {
-  return c.text("Lovable Clone API is running!");
+  return c.text("HS Solutions API is running!");
 });
 
 app.get("/health", (c) => {

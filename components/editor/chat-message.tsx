@@ -35,7 +35,7 @@ export function ChatMessage({ role, content }: ChatMessageProps) {
         )}
       >
         <p className={cn("text-sm font-medium", isUser ? "text-zinc-300" : "text-white")}>
-          {isUser ? "You" : "Lovable AI"}
+          {isUser ? "You" : "HS Solutions AI"}
         </p>
         <div 
           className={cn(

@@ -8,7 +8,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { AI_MODELS, AIModel } from "@/lib/models";
+import { AI_MODELS } from "@/lib/models";
 
 interface ModelSelectorProps {
   selectedModel: string;

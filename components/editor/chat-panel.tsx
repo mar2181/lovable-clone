@@ -1,13 +1,13 @@
-﻿"use client";
+"use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Loader2 } from "lucide-react";
+import { Send, Bot, Paperclip, Loader2, Eye } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps } from "@/components/editor/chat-message";
 import { GenerationProgress } from "@/components/editor/generation-progress";
-import { DEFAULT_MODEL } from "@/lib/models";
-import { useAuth } from "@clerk/nextjs";
+import { DEFAULT_MODEL, VISION_MODEL, AI_MODELS } from "@/lib/models";
+import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { parseStreamToJSON } from "@/lib/file-parser";
@@ -19,22 +19,79 @@ interface ChatPanelProps {
   onUpdateDependencies?: (deps: Record<string, string>) => void;
 }
 
+// Visible-message states. The chat bubble shows ONE of these strings,
+// never the raw streamed JSON. The raw JSON lives in a ref for parsing.
+const PLACEHOLDER_GENERATING = "Generating your app…";
+const PLACEHOLDER_PARSING = "Parsing files…";
+const PLACEHOLDER_IMAGES = "Generating AI images…";
+
+// Marker the worker injects into the chunk stream when it switches from
+// streaming model output to running fal.ai image generation. We detect it
+// to update the visible status, but we don't render it in the chat bubble.
+const IMAGE_GEN_MARKER = "Generating AI images";
+
+function summarizeChanges(prev: Record<string, string> | null | undefined, next: Record<string, string>): { added: number; modified: number; total: number } {
+  const before = prev || {};
+  let added = 0;
+  let modified = 0;
+  for (const k of Object.keys(next)) {
+    if (!(k in before)) added++;
+    else if (before[k] !== next[k]) modified++;
+  }
+  return { added, modified, total: added + modified };
+}
+
+function buildDoneSummary(diff: { added: number; modified: number; total: number }): string {
+  if (diff.total === 0) {
+    return "Done — but no files were changed. Try rephrasing your prompt.";
+  }
+  const parts: string[] = [];
+  if (diff.added > 0) parts.push(`${diff.added} new`);
+  if (diff.modified > 0) parts.push(`${diff.modified} updated`);
+  const noun = diff.total === 1 ? "file" : "files";
+  return `Done — ${parts.join(", ")} ${noun}. Preview updated.`;
+}
+
 export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDependencies }: ChatPanelProps) {
   const [prompt, setPrompt] = useState("");
   const [selectedModel, setSelectedModel] = useState(DEFAULT_MODEL);
   const [messages, setMessages] = useState<ChatMessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
-  const [attachedImage, setAttachedImage] = useState<string | null>(null);
+  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [previousModel, setPreviousModel] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
-  
-  // Use a ref to accumulate the full assistant response for live parsing
-  const assistantContentRef = useRef("");
+
+  // Raw streamed assistant response — used for parsing only, NEVER rendered.
+  const rawAssistantResponseRef = useRef("");
+  // Snapshot of the file map BEFORE this generation, for diff-based summaries.
+  const filesAtSubmitRef = useRef<Record<string, string>>({});
+  // Tracks whether we've already finalized the assistant message
+  // (so the finally block doesn't overwrite a real done/error message).
+  const finalizedRef = useRef(false);
+  const doneReceivedRef = useRef(false);
+
+  // Live ref to current contextFiles, so the chunk handler always sees the
+  // freshest file map even though it captures contextFiles in a closure.
   const contextFilesRef = useRef(contextFiles);
   contextFilesRef.current = contextFiles;
-  const doneReceivedRef = useRef(false);
+
+  // Helper: replace the last assistant placeholder with a finalized message
+  // (clean summary or error). Idempotent — runs at most once per submit.
+  const finalizeAssistantMessage = useCallback((finalText: string) => {
+    if (finalizedRef.current) return;
+    finalizedRef.current = true;
+    setMessages((prev) => {
+      const next = [...prev];
+      const last = next[next.length - 1];
+      if (last && last.role === "assistant") {
+        next[next.length - 1] = { ...last, content: finalText };
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -42,23 +99,57 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     }
   }, [messages, isGenerating]);
 
+  const MAX_IMAGES = 10;
+
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const remaining = MAX_IMAGES - attachedImages.length;
+    const toProcess = files.slice(0, remaining);
+
+    if (files.length > remaining) {
+      alert(`You can attach up to ${MAX_IMAGES} images. Only the first ${remaining} will be added.`);
+    }
+
+    toProcess.forEach(file => {
       if (file.size > 5 * 1024 * 1024) {
-        alert("Image must be smaller than 5MB");
+        alert(`"${file.name}" is larger than 5MB and was skipped.`);
         return;
       }
       const reader = new FileReader();
       reader.onloadend = () => {
-        setAttachedImage(reader.result as string);
+        setAttachedImages(prev => {
+          if (prev.length >= MAX_IMAGES) return prev;
+          const next = [...prev, reader.result as string];
+          // Auto-switch to vision model once first image is attached
+          if (next.length === 1) {
+            const currentModelInfo = AI_MODELS.find(m => m.id === selectedModel);
+            if (currentModelInfo && !currentModelInfo.vision) {
+              setPreviousModel(selectedModel);
+              setSelectedModel(VISION_MODEL);
+            }
+          }
+          return next;
+        });
       };
       reader.readAsDataURL(file);
-    }
+    });
+
+    // Reset input so same files can be re-selected
+    if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const removeAttachment = () => {
-    setAttachedImage(null);
+  const removeAttachment = (index: number) => {
+    setAttachedImages(prev => {
+      const next = prev.filter((_, i) => i !== index);
+      // Restore previous model if all images removed
+      if (next.length === 0 && previousModel) {
+        setSelectedModel(previousModel);
+        setPreviousModel(null);
+      }
+      return next;
+    });
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
@@ -67,21 +158,25 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     if (!prompt.trim() || isGenerating) return;
 
     const userMessage = prompt;
-    const currentImage = attachedImage;
-    
+    const currentImages = [...attachedImages];
+
     setPrompt("");
-    setAttachedImage(null);
+    setAttachedImages([]);
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
     setIsGenerating(true);
-    setStatusMessage("Connecting to AI...");
-    assistantContentRef.current = "";
+    setStatusMessage("Connecting to AI…");
+    rawAssistantResponseRef.current = "";
     doneReceivedRef.current = false;
+    finalizedRef.current = false;
+    // Snapshot the pre-generation file set so we can summarize the diff at done.
+    filesAtSubmitRef.current = { ...contextFilesRef.current };
 
     try {
       const token = await getToken();
-      
-      // Append the assistant message placeholder
-      setMessages((prev) => [...prev, { role: "assistant", content: "" }]);
+
+      // Append the assistant placeholder. This is what the user sees while
+      // the stream runs — NOT the raw JSON.
+      setMessages((prev) => [...prev, { role: "assistant", content: PLACEHOLDER_GENERATING }]);
 
       await fetchEventSource(`${WORKER_URL}/api/chat/${projectId}`, {
         method: "POST",
@@ -93,87 +188,119 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           prompt: userMessage,
           model: selectedModel,
           contextFiles: contextFiles,
-          imageBase64: currentImage
+          imagesBase64: currentImages
         }),
         async onopen() {
-          setStatusMessage("AI is generating code...");
+          setStatusMessage("AI is generating code…");
         },
         onmessage(ev) {
           if (ev.event === "message") {
-            const data = JSON.parse(ev.data);
+            let data: any;
+            try { data = JSON.parse(ev.data); }
+            catch { return; } // ignore malformed SSE frames
+
             if (data.type === "chunk") {
-              setStatusMessage("Writing code...");
-              
-              // Accumulate content in ref (outside of React state updater)
-              assistantContentRef.current += data.content;
-              const currentContent = assistantContentRef.current;
-              
-              // Update the assistant message text
-              setMessages((prev) => {
-                const newMessages = [...prev];
-                const last = newMessages[newMessages.length - 1];
-                if (last && last.role === "assistant") {
-                  last.content = currentContent;
-                }
-                return newMessages;
-              });
-              
-              // Try to parse partial files to update preview live
-              // This is now OUTSIDE the setMessages updater â€” safe to call parent setState
+              // Accumulate raw chunks for parsing only — never render them.
+              rawAssistantResponseRef.current += data.content || "";
+              const accumulated = rawAssistantResponseRef.current;
+
+              // Detect the worker's image-gen marker to update the visible
+              // status (without showing the marker itself in chat).
+              if (typeof data.content === "string" && data.content.includes(IMAGE_GEN_MARKER)) {
+                setStatusMessage(PLACEHOLDER_IMAGES);
+              } else {
+                setStatusMessage("Writing code…");
+              }
+
+              // Best-effort partial parse to update the live preview.
               try {
-                const parsed = parseStreamToJSON(currentContent);
+                const parsed = parseStreamToJSON(accumulated);
                 if (parsed && parsed.files && Object.keys(parsed.files).length > 0) {
                   onUpdateFiles({ ...contextFilesRef.current, ...parsed.files });
                 }
-              } catch (e) {
-                // Ignore parse errors on partial streams
+              } catch {
+                // ignore — partial JSON is expected mid-stream
               }
-              
+
             } else if (data.type === "done") {
               doneReceivedRef.current = true;
-              setStatusMessage("Done!");
-              if (data.files) {
+              setStatusMessage(PLACEHOLDER_PARSING);
+
+              if (data.files && typeof data.files === "object") {
                 onUpdateFiles(data.files);
+                if (data.dependencies && onUpdateDependencies) {
+                  onUpdateDependencies(data.dependencies);
+                }
+                const diff = summarizeChanges(filesAtSubmitRef.current, data.files);
+                // If the worker provided an aiMessage (model's own no-op
+                // explanation, or the prose the model returned when JSON
+                // parsing failed), show that instead of the generic
+                // "Try rephrasing your prompt" string.
+                const aiMessage = typeof data.aiMessage === "string" ? data.aiMessage.trim() : "";
+                finalizeAssistantMessage(aiMessage || buildDoneSummary(diff));
+              } else {
+                finalizeAssistantMessage(
+                  "Generation finished, but the response could not be parsed into files. Please try again."
+                );
               }
-              if (data.dependencies && onUpdateDependencies) {
-                onUpdateDependencies(data.dependencies);
-              }
+              setStatusMessage("Done");
+
+            } else if (data.type === "error") {
+              const msg = typeof data.error === "string" && data.error ? data.error : "unknown error";
+              finalizeAssistantMessage(`Generation failed: ${msg}`);
+              setStatusMessage("Error");
             }
           } else if (ev.event === "error") {
-             console.error("Stream error:", ev.data);
+            console.error("Stream error event:", ev.data);
+            let msg = "unknown error";
+            try {
+              const parsed = JSON.parse(ev.data);
+              if (parsed?.error) msg = String(parsed.error);
+            } catch {}
+            finalizeAssistantMessage(`Generation failed: ${msg}`);
+            setStatusMessage("Error");
           }
         },
         onclose() {
-          // Server closed the connection - this is normal after "done"
-          // Do NOT retry
+          // Server closed the connection — normal after "done". Do NOT retry.
         },
         onerror(err) {
-          // Only log, don't throw - throwing can prevent the last "done" event from being processed
           console.error("EventSource connection error:", err);
-          // Throwing stops retries but may cut off buffered events
-          // Instead, just close gracefully
+          // Throw to stop fetchEventSource's retry loop. The catch / finally
+          // below will surface a clean error to the user.
           throw err;
         }
       });
     } catch (error) {
       console.error("Chat error:", error);
-      setStatusMessage("Error â€” check console");
+      const msg = error instanceof Error ? error.message : "could not reach the worker";
+      finalizeAssistantMessage(`Generation failed: ${msg}`);
+      setStatusMessage("Error");
     } finally {
-      // Fallback: if "done" event was never processed (fetchEventSource drops it sometimes),
-      // parse files from the accumulated assistant content
-      if (!doneReceivedRef.current && assistantContentRef.current) {
+      // Fallback: if the "done" event was dropped by fetchEventSource (it
+      // sometimes is), reconstruct the result from the accumulated raw text.
+      if (!doneReceivedRef.current && !finalizedRef.current && rawAssistantResponseRef.current) {
         try {
-          const parsed = parseStreamToJSON(assistantContentRef.current);
+          const parsed = parseStreamToJSON(rawAssistantResponseRef.current);
           if (parsed && parsed.files && Object.keys(parsed.files).length > 0) {
-            console.log("Fallback: applying files from accumulated content (done event was missed)");
-            onUpdateFiles({ ...contextFilesRef.current, ...parsed.files });
+            const merged = { ...contextFilesRef.current, ...parsed.files };
+            onUpdateFiles(merged);
             if (parsed.dependencies && onUpdateDependencies) {
               onUpdateDependencies(parsed.dependencies);
             }
-            setStatusMessage("Done!");
+            const diff = summarizeChanges(filesAtSubmitRef.current, merged);
+            finalizeAssistantMessage(buildDoneSummary(diff));
+            setStatusMessage("Done");
+          } else {
+            finalizeAssistantMessage(
+              "Generation finished, but the response could not be parsed into files. Please try again."
+            );
           }
         } catch (e) {
           console.error("Fallback parsing failed:", e);
+          finalizeAssistantMessage(
+            "Generation finished, but the response could not be parsed into files. Please try again."
+          );
         }
       }
       setIsGenerating(false);
@@ -208,14 +335,14 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         <div className="absolute bottom-[160px] left-1/2 -translate-x-1/2 z-10 w-full max-w-[90%] px-4">
           <GenerationProgress
             isGenerating={isGenerating}
-            message={statusMessage || "Processing..."}
+            message={statusMessage || "Processing…"}
             className="w-full shadow-[0_0_30px_rgba(0,0,0,0.8)]"
           />
         </div>
       )}
 
       <div className="p-4 border-t border-white/5 bg-zinc-950/80 backdrop-blur-xl shrink-0 z-20 relative">
-        <form 
+        <form
           onSubmit={handleSubmit}
           className="relative rounded-xl border border-white/10 bg-zinc-900/50 focus-within:ring-1 focus-within:ring-primary focus-within:border-primary transition-all overflow-hidden p-2"
         >
@@ -231,47 +358,58 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
               }
             }}
           />
-          
+
           <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
-            {attachedImage && (
-              <div className="mb-2 relative inline-block">
-                <img src={attachedImage} alt="Attachment" className="h-16 rounded-md border border-white/10" />
-                <button 
-                  type="button" 
-                  onClick={removeAttachment}
-                  className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
-                >
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                </button>
+            {attachedImages.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {attachedImages.map((img, idx) => (
+                  <div key={idx} className="relative inline-block">
+                    <img src={img} alt={`Attachment ${idx + 1}`} className="h-16 w-16 object-cover rounded-md border border-white/10" />
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(idx)}
+                      className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                    </button>
+                  </div>
+                ))}
+                {previousModel && (
+                  <div className="w-full flex items-center gap-1 text-[10px] text-blue-400">
+                    <Eye className="w-3 h-3" />
+                    <span>Vision model active</span>
+                  </div>
+                )}
               </div>
             )}
             <div className="flex items-center gap-2">
-              <input 
-                type="file" 
-                accept="image/*" 
-                className="hidden" 
-                ref={fileInputRef} 
-                onChange={handleImageUpload} 
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="hidden"
+                ref={fileInputRef}
+                onChange={handleImageUpload}
               />
-              <Button 
-                type="button" 
-                variant="ghost" 
-                size="icon" 
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
                 className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
                 onClick={() => fileInputRef.current?.click()}
               >
                 <Paperclip className="w-4 h-4" />
               </Button>
-              <ModelSelector 
+              <ModelSelector
                 selectedModel={selectedModel}
                 onModelChange={setSelectedModel}
                 disabled={isGenerating}
               />
             </div>
-            
-            <Button 
-              type="submit" 
-              size="icon" 
+
+            <Button
+              type="submit"
+              size="icon"
               disabled={!prompt.trim() || isGenerating}
               className="h-8 w-8 rounded-lg bg-primary text-primary-foreground disabled:opacity-50"
             >
@@ -288,4 +426,3 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     </div>
   );
 }
-
