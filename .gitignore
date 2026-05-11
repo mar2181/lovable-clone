@@ -73,3 +73,11 @@ worker/.wrangler/
 
 # Claude Code internal scratch space (worktrees, session state, etc.)
 .claude/
+
+# Lovable dev runtime artifacts (logs, pids written by scripts/start-lovable-*.sh)
+.lovable-startup-logs/
+
+# QA daily report outputs (keep qa/lovable-daily-qa.mjs, ignore the artifacts)
+qa/logs/
+qa/screenshots/
+qa/reports/

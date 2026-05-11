@@ -52,6 +52,25 @@ export async function authMiddleware(c: Context, next: Next) {
   }
 
   // ---------------------------------------------------------------------------
+  // Development dev-bypass — matches the frontend lib/dev-auth.tsx fake user.
+  // Only fires when ENVIRONMENT === "development" AND the bearer token is the
+  // exact dev token. Owner email is registered so isOwner() returns true and
+  // the dashboard shows the unlimited badge + project list.
+  // ---------------------------------------------------------------------------
+  const devAuthHeader = c.req.header("Authorization");
+  if (
+    c.env.ENVIRONMENT === "development" &&
+    devAuthHeader === "Bearer dev-local-user"
+  ) {
+    const devUserId = "dev-local-user";
+    c.set("userId", devUserId);
+    registerOwnerIfAdmin(devUserId, "hssolutions2181@gmail.com");
+    console.log(`[Dev Auth] dev-bypass accepted, user=${devUserId}`);
+    await next();
+    return;
+  }
+
+  // ---------------------------------------------------------------------------
   // Clerk JWT verification — the real auth path.
   // ---------------------------------------------------------------------------
   const authHeader = c.req.header("Authorization");
