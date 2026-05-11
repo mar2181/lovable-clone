@@ -10,19 +10,27 @@ bucket_name = "lovable-projects"
 # KV store for user data and credits
 [[kv_namespaces]]
 binding = "KV_METADATA"
-id = "local_dev_kv_placeholder_id"
+id = "762c5fc8290c44259c67922b75fa2d13"
 
 [vars]
 ENVIRONMENT = "development"
 
-# Secrets (loaded from .dev.vars for local dev, or wrangler secret put for production)
-# Required:
-#   CLERK_DOMAIN                — Clerk frontend API domain (no protocol)
-#   CLERK_SECRET_KEY            — from Clerk Dashboard
-#   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY — from Clerk Dashboard
-#   OPENROUTER_API_KEY          — from openrouter.ai/keys
-#   FAL_KEY                     — from fal.ai/dashboard/keys
-# Optional:
-#   GITHUB_PAT                  — from github.com/settings/tokens
-#   VERCEL_API_KEY              — from vercel.com/account/tokens
-#   ALLOWED_ORIGINS             — comma-separated extra CORS origins
+# R2 public domain for attachment URLs. Set this to your R2 bucket's public
+# custom domain or the r2.dev domain (e.g. "https://pub-<hash>.r2.dev").
+# Without it, attachment uploads will return 500.
+R2_PUBLIC_DOMAIN = "https://pub-e52c67ab7c214282b6a2dd26d84e0cc3.r2.dev"
+
+# Secrets (loaded from .dev.vars for local dev, wrangler secret put for production)
+# CLERK_SECRET_KEY
+# OPENROUTER_API_KEY
+# FAL_KEY
+# SUPABASE_PAT              (Personal Access Token from supabase.com/dashboard/account/tokens)
+
+# Daily garbage-collection cron (03:00 UTC) — cleans up orphaned attachment
+# R2 objects and GC markers.
+[triggers]
+crons = ["0 3 * * *"]
+
+# Local dev: pin port to avoid collision with other services
+[dev]
+port = 8788

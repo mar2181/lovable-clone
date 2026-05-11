@@ -1,0 +1,36 @@
+# Worker environment variables (local development)
+# Copy this file to .dev.vars and fill in your values
+# These are used by `wrangler dev` locally
+
+# Clerk Auth
+# CLERK_DOMAIN: Your Clerk frontend API domain (no protocol)
+# Find this in Clerk Dashboard > API Keys > "Frontend API URL"
+# Example: "clerk.your-app.com" or "making-frog-12.clerk.accounts.dev"
+CLERK_DOMAIN=""
+CLERK_SECRET_KEY=""
+NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=""
+
+# OpenRouter — used for AI code generation
+# Get your key at: https://openrouter.ai/keys
+OPENROUTER_API_KEY=""
+
+# fal.ai — used for image generation
+# Get your key at: https://fal.ai/dashboard/keys
+FAL_KEY=""
+
+# GitHub PAT — used for pushing generated code to GitHub
+# Create at: https://github.com/settings/tokens
+# Needs: repo (full control of private repositories)
+GITHUB_PAT=""
+
+# Vercel API Key — used for deploying to Vercel
+# Get at: https://vercel.com/account/tokens
+VERCEL_API_KEY=""
+
+# CORS — extra allowed origins (comma-separated)
+# Auto-allowed: localhost ports + *.vercel.app
+# Add your custom domain here if deploying elsewhere
+ALLOWED_ORIGINS=""
+
+# Environment flag
+ENVIRONMENT="development"

@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "lovable": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "/mnt/c/Users/mario/lovable-mcp/dist/index.js"
+      ]
+    }
+  }
+}

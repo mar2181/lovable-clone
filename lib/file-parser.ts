@@ -1,14 +1,18 @@
 interface ParsedResponse {
   files: Record<string, string>;
   dependencies?: Record<string, string>;
+  migration?: { description: string; sql: string };
 }
 
 /**
  * Parses the AI's streamed text output into structured files + dependencies.
- * 
+ *
  * The worker's system prompt instructs the AI to return pure JSON like:
  * { "files": { "/src/App.tsx": "..." }, "dependencies": { "some-pkg": "^1.0" } }
- * 
+ *
+ * When Supabase is linked, the response may also include a "migration" field:
+ * { "migration": { "description": "...", "sql": "..." } }
+ *
  * During streaming the text may be incomplete / wrapped in markdown fences.
  * We handle both cases gracefully.
  */
@@ -32,6 +36,7 @@ export function parseStreamToJSON(text: string): ParsedResponse | null {
       return {
         files: parsed.files,
         dependencies: parsed.dependencies || {},
+        migration: parsed.migration || undefined,
       };
     }
     return null;
@@ -48,6 +53,7 @@ export function parseStreamToJSON(text: string): ParsedResponse | null {
           return {
             files: parsed.files,
             dependencies: parsed.dependencies || {},
+            migration: parsed.migration || undefined,
           };
         }
       }

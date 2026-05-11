@@ -42,3 +42,42 @@ next-env.d.ts
 
 # clerk configuration (can include secrets)
 /.clerk/
+
+# === Stabilization pass: explicit secret protection ===
+# Allow committing example templates
+!.env.example
+!worker/.dev.vars.example
+
+# Wrangler dev secrets (never commit)
+worker/.dev.vars
+.dev.vars
+.dev.vars.*
+!.dev.vars.example
+!*.dev.vars.example
+
+# Private keys
+*.key
+*.pfx
+*.p12
+
+# Wrangler local state
+worker/.wrangler/
+
+# Audit/dev-only artifacts
+.audit-*.log
+.audit-*.pid
+*.audit-bak
+
+# node_modules in nested workspaces (worker/, mcp-server/)
+**/node_modules/
+
+# Claude Code internal scratch space (worktrees, session state, etc.)
+.claude/
+
+# Lovable dev runtime artifacts (logs, pids written by scripts/start-lovable-*.sh)
+.lovable-startup-logs/
+
+# QA daily report outputs (keep qa/lovable-daily-qa.mjs, ignore the artifacts)
+qa/logs/
+qa/screenshots/
+qa/reports/

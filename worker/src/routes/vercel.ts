@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
+import type { SupabaseLinkRecord } from "../types/supabase";
 
 const vercelRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -330,6 +331,7 @@ export default function App() {
         projectSettings: {
           framework: "create-react-app",
         },
+        env: deployEnv,
       }),
     });
 

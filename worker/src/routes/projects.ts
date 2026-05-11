@@ -141,10 +141,67 @@ projectsRouter.delete("/:id", async (c) => {
     // Delete from KV
     await kv.delete(`user:${userId}:project:${projectId}`);
     await kv.delete(`project:${projectId}:latest_version`);
-    
-    // Delete files from R2 (simplified: optimally we should list and delete all versions)
-    // For a real production app we'd use a background task or worker cron to clean up R2
-    
+
+    // Cascade-unlink Supabase (keep OAuth tokens — other projects may use them)
+    try {
+      await kv.delete(`project:${projectId}:supabase`);
+      await kv.delete(`project:${projectId}:supabase_schema`);
+      await kv.delete(`project:${projectId}:supabase_migrations`);
+    } catch (err: any) {
+      console.error(`[Projects] Supabase cascade-unlink failed: ${err?.message || "unknown"}`);
+    }
+
+    // ── Cascade-delete attachments ──────────────────────────────────────────────
+    try {
+      const attListKey = `project:${projectId}:attachments`;
+      const attListStr = await kv.get(attListKey);
+      if (attListStr) {
+        const { ids } = JSON.parse(attListStr) as { ids: string[] };
+        for (const aid of ids) {
+          try {
+            const recRaw = await kv.get(`project:${projectId}:attachment:${aid}`);
+            if (recRaw) {
+              const rec = JSON.parse(recRaw);
+              await r2.delete(rec.r2Key);
+            }
+            await kv.delete(`project:${projectId}:attachment:${aid}`);
+          } catch (err: any) {
+            // Queue for GC cron if individual delete fails
+            console.error(
+              `[Projects] cascade-delete attachment ${aid} failed: ${err?.message || "unknown"}`,
+            );
+            await kv.put(
+              `gc:attachment:${aid}`,
+              JSON.stringify({ deletedAt: new Date().toISOString(), r2Key: `attachments/${userId}/${projectId}/${aid}.*` }),
+            );
+          }
+        }
+        await kv.delete(attListKey);
+      }
+    } catch (err: any) {
+      console.error(
+        `[Projects] cascade-delete attachments for project ${projectId} failed: ${err?.message || "unknown"}`,
+      );
+      // Non-fatal — project metadata is already deleted. Orphans queued for GC.
+    }
+
+    // Delete version files from R2 (best-effort: delete known versions)
+    try {
+      const latestVer = await kv.get(`project:${projectId}:latest_version`);
+      // latest_version was already deleted above, but we read it before deletion for the cascade.
+      // Re-read isn't possible since we deleted it. Instead, list R2 objects.
+      const r2Objects = await r2.list({ prefix: `${projectId}/` });
+      for (const obj of r2Objects.objects) {
+        try {
+          await r2.delete(obj.key);
+        } catch (err: any) {
+          console.error(`[Projects] R2 delete ${obj.key} failed: ${err?.message || "unknown"}`);
+        }
+      }
+    } catch (err: any) {
+      console.error(`[Projects] R2 cleanup for ${projectId} failed: ${err?.message || "unknown"}`);
+    }
+
     return c.json({ success: true });
   } catch (error) {
     return c.json({ error: "Failed to delete project" }, 500);

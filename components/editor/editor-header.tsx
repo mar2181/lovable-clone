@@ -60,7 +60,7 @@ function GitHubButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
       onClick={handlePush}
       disabled={state === "pushing"}
     >
@@ -115,7 +115,7 @@ function VercelButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
       onClick={handleDeploy}
       disabled={state === "deploying"}
     >
@@ -125,7 +125,7 @@ function VercelButton({ projectId }: { projectId: string }) {
   );
 }
 
-export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFiles }: { projectId: string; onOpenMemory?: () => void; contextFiles?: Record<string, string>; onUpdateFiles?: (files: Record<string, string>) => void }) {
+export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFiles, supabaseSlot }: { projectId: string; onOpenMemory?: () => void; contextFiles?: Record<string, string>; onUpdateFiles?: (files: Record<string, string>) => void; supabaseSlot?: React.ReactNode }) {
   return (
     <header className="h-14 border-b border-white/5 bg-zinc-950/80 backdrop-blur-xl flex items-center justify-between px-4 shrink-0">
       <div className="flex items-center gap-4">
@@ -154,12 +154,13 @@ export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFi
           <Settings className="w-4 h-4 mr-2" />
           Settings
         </Button>
-        <Button variant="outline" size="sm" className="h-8 bg-white/5 border-white/10">
+        <Button variant="outline" size="sm" className="h-8 bg-white/5 border-white/10 hidden lg:inline-flex">
           <Share className="w-4 h-4 mr-2" />
           Share
         </Button>
         <GitHubButton projectId={projectId} />
         <VercelButton projectId={projectId} />
+        {supabaseSlot}
         <ExportButton projectId={projectId} />
       </div>
     </header>
