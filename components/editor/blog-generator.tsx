@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import {
   Dialog,
   DialogContent,

@@ -4,7 +4,7 @@ import { useState } from "react";
 import { Download, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WORKER_URL } from "@/lib/constants";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 
 export function ExportButton({ projectId }: { projectId: string }) {
   const [isExporting, setIsExporting] = useState(false);

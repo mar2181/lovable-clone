@@ -34,4 +34,3 @@ crons = ["0 3 * * *"]
 # Local dev: pin port to avoid collision with other services
 [dev]
 port = 8788
-

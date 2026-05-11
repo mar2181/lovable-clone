@@ -16,7 +16,7 @@ const PAGE_GENERATORS: Record<string, (info: BusinessInfo) => string> = {
 
 /**
  * Build a complete file set for a template + business info.
- * Returns the same shape the Lovable clone expects: { files: Record<string, string>, dependencies: Record<string, string> }
+ * Returns the same shape the HS Solutions expects: { files: Record<string, string>, dependencies: Record<string, string> }
  */
 export function buildTemplateProject(template: TemplateConfig, info: BusinessInfo): { files: Record<string, string>; dependencies: Record<string, string> } {
   const files: Record<string, string> = {};

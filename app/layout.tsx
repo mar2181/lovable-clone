@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
-import { ClerkProvider } from "@clerk/nextjs";
+import { ClerkProvider } from "@/lib/dev-auth";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Lovable Clone",
-  description: "AI App Builder SaaS",
+  title: "HS Solutions App & Web Builder",
+  description: "HS Solutions app and web builder",
 };
 
 export default function RootLayout({
