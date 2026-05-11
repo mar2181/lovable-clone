@@ -1,3 +1,4 @@
+import { cleanForbiddenIconImports, cleanForbiddenIconJsx, cleanOtherIconLibraries } from './icon-sanitizer';
 
 import { VALID_LUCIDE_ICONS } from './lucide-valid-icons';
 
