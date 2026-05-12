@@ -4,7 +4,7 @@ import { useState, useEffect, useCallback } from "react";
 import { X, Brain, Save, Loader2, MessageSquare } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { WORKER_URL } from "@/lib/constants";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 
 interface ProjectMemoryProps {
   projectId: string;

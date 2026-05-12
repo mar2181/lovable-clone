@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { Sparkles } from "lucide-react";
-import { SignInButton, UserButton, useUser } from "@clerk/nextjs";
+import { SignInButton, UserButton, useUser } from "@/lib/dev-auth";
 import { Button } from "@/components/ui/button";
 
 export function Navbar() {

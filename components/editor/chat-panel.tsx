@@ -10,7 +10,7 @@ import { GenerationProgress } from "@/components/editor/generation-progress";
 import { AttachmentPreview } from "@/components/editor/attachment-preview";
 import { UploadProgress } from "@/components/editor/upload-progress";
 import { DEFAULT_MODEL, VISION_MODEL, AI_MODELS } from "@/lib/models";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { parseStreamToJSON } from "@/lib/file-parser";

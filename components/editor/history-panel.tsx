@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { History, Clock, ArrowLeft, RefreshCw, Loader2 } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
 import { formatDistanceToNow } from "date-fns";
 import { Button } from "@/components/ui/button";

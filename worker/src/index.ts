@@ -28,6 +28,7 @@ export type Bindings = {
   MCP_API_KEY: string;
   R2_PUBLIC_DOMAIN: string;
   SUPABASE_PAT: string;
+  ALLOWED_ORIGINS: string;
 };
 
 // Define custom variables that persist through the request (like userId)
@@ -37,26 +38,36 @@ export type Variables = {
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
-// Enable CORS for frontend
-app.use(
-  "/*",
-  cors({
-    origin: [
-      "http://localhost:3000",
-      "http://localhost:3001",
-      "http://localhost:3002",
-      "http://localhost:3003",
-      "http://localhost:3015",
-      "https://localhost:3000",
-      "https://hswebappbuilder.space",
-      "https://lovable-clone-*.vercel.app",
-    ],
-    allowHeaders: ["Content-Type", "Authorization"],
+// CORS origin list. Sourced from the ALLOWED_ORIGINS env var (comma-separated)
+// with a small built-in fallback for the production hostname and the two
+// localhost ports we always use. We keep the env var as the single source of
+// truth so local dev (.dev.vars), preview, and prod can each ship their own
+// list without code edits.
+const FALLBACK_ORIGINS = [
+  "http://localhost:3015",
+  "http://127.0.0.1:3015",
+  "https://hswebappbuilder.space",
+];
+function buildOriginList(env: Bindings | undefined): string[] {
+  const fromEnv = (env?.ALLOWED_ORIGINS || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const merged = new Set<string>([...fromEnv, ...FALLBACK_ORIGINS]);
+  return Array.from(merged);
+}
+
+app.use("/*", async (c, next) => {
+  const allowList = buildOriginList(c.env);
+  const handler = cors({
+    origin: (incoming) => (allowList.includes(incoming) ? incoming : null),
+    allowHeaders: ["Content-Type", "Authorization", "X-API-Key", "X-User-Id"],
     allowMethods: ["POST", "GET", "OPTIONS", "PUT", "DELETE"],
     exposeHeaders: ["Content-Length"],
     credentials: true,
-  })
-);
+  });
+  return handler(c, next);
+});
 
 // Mount routers
 app.route("/api/projects", projectsRouter);

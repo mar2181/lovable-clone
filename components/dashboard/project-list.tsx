@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { Loader2, Plus, Code2 } from "lucide-react";
 import { WORKER_URL } from "@/lib/constants";
 import { ProjectCard } from "@/components/dashboard/project-card";

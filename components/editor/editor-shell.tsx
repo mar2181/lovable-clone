@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { ChatPanel } from "@/components/editor/chat-panel";
 import { WorkspacePanel } from "@/components/editor/workspace-panel";
 import { EditorHeader } from "@/components/editor/editor-header";

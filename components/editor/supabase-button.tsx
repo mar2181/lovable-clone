@@ -3,7 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Database, CheckCircle2, Loader2, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { getConnectStatus, type SupabaseLinkInfo } from "@/lib/supabase-client";
 
 interface SupabaseButtonProps {

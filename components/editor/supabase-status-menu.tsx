@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ExternalLink, Eye, LogOut, Loader2 } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { unlinkProject, type SupabaseLinkInfo } from "@/lib/supabase-client";
 
 interface SupabaseStatusMenuProps {

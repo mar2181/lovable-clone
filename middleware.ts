@@ -1,4 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
+import { NextResponse, type NextRequest } from 'next/server'
 
 const isPublicRoute = createRouteMatcher([
   '/',
@@ -8,11 +9,19 @@ const isPublicRoute = createRouteMatcher([
   '/test-preview(.*)'
 ])
 
-export default clerkMiddleware(async (auth, request) => {
+const DEV_BYPASS =
+  process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === '1' ||
+  process.env.NODE_ENV === 'development'
+
+const devBypassMiddleware = (_req: NextRequest) => NextResponse.next()
+
+const realMiddleware = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {
     await auth.protect()
   }
 })
+
+export default DEV_BYPASS ? devBypassMiddleware : realMiddleware
 
 export const config = {
   matcher: [

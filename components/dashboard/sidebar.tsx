@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Sparkles, LayoutDashboard, Settings, CreditCard } from "lucide-react";
-import { UserButton, useUser } from "@clerk/nextjs";
+import { UserButton, useUser } from "@/lib/dev-auth";
 import { cn } from "@/lib/utils";
 import { CreditsDisplay } from "@/components/dashboard/credits-display";
 
