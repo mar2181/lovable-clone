@@ -1,16 +1,6 @@
 import { Context, Next } from "hono";
-import { jwtVerify, createRemoteJWKSet } from "jose";
-
-// Cache JWKS per Clerk domain to avoid recreating on every request
-const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
-
-function getJWKS(clerkDomain: string) {
-  if (!jwksCache.has(clerkDomain)) {
-    const jwksUrl = new URL(`https://${clerkDomain}/.well-known/jwks.json`);
-    jwksCache.set(clerkDomain, createRemoteJWKSet(jwksUrl));
-  }
-  return jwksCache.get(clerkDomain)!;
-}
+import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
+import { registerOwnerIfAdmin } from "../services/credits";
 
 // JWKS is cached across requests within a worker instance. jose's
 // createRemoteJWKSet handles its own internal caching; we memoize the
@@ -84,17 +74,6 @@ export async function authMiddleware(c: Context, next: Next) {
   // Clerk JWT verification — the real auth path.
   // ---------------------------------------------------------------------------
   const authHeader = c.req.header("Authorization");
-  const env = c.env.ENVIRONMENT;
-  const devToken = "dev-local-user";
-
-  // Local dev bypass: allow the localhost frontend even if Clerk is not configured
-  // or the compiled frontend sends an older/empty dev token.
-  if (env === "development") {
-    c.set("userId", devToken);
-    await next();
-    return;
-  }
-
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
     return c.json({ error: "Unauthorized — no bearer token" }, 401);
   }
@@ -103,43 +82,44 @@ export async function authMiddleware(c: Context, next: Next) {
     return c.json({ error: "Unauthorized — empty token" }, 401);
   }
 
-  const token = authHeader.split(" ")[1];
-
-  // CLERK_DOMAIN is the Clerk frontend API domain (e.g. "clerk.your-app.com")
-  // or the issuer URL without protocol (e.g. "clerk.your-app.com")
-  const clerkDomain = c.env.CLERK_DOMAIN;
-
-  if (!clerkDomain) {
-    console.error("CLERK_DOMAIN is missing in worker environment");
-    return c.json({ error: "Server Configuration Error" }, 500);
+  const publishableKey = c.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY;
+  if (!publishableKey) {
+    console.error("[Auth] NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY is not set");
+    return c.json({ error: "Server configuration error" }, 500);
   }
 
+  const jwksBundle = getJWKS(publishableKey);
+  if (!jwksBundle) {
+    console.error("[Auth] Could not derive Clerk frontend API from publishable key");
+    return c.json({ error: "Server configuration error" }, 500);
+  }
+
+  let payload: JWTPayload;
   try {
-    const JWKS = getJWKS(clerkDomain);
-    const issuer = `https://${clerkDomain}`;
-
-    const { payload } = await jwtVerify(token, JWKS, {
-      issuer,
+    const result = await jwtVerify(token, jwksBundle.jwks, {
+      issuer: `https://${jwksBundle.frontendApi}`,
+      // Clerk session JWTs do not carry an `aud` claim by default.
+      // Skipping audience verification is consistent with Clerk's own SDKs.
     });
-
-    if (!payload.sub) {
-      return c.json({ error: "Invalid token structure" }, 401);
+    payload = result.payload;
+  } catch (err: any) {
+    const code = err?.code || err?.name || "unknown";
+    if (code === "ERR_JWT_EXPIRED" || code === "JWTExpired") {
+      return c.json({ error: "Unauthorized — token expired" }, 401);
     }
+    if (code === "ERR_JWS_SIGNATURE_VERIFICATION_FAILED" || code === "JWSSignatureVerificationFailed") {
+      console.warn("[Auth] Bad signature");
+      return c.json({ error: "Unauthorized — invalid signature" }, 401);
+    }
+    if (code === "ERR_JWT_CLAIM_VALIDATION_FAILED" || code === "JWTClaimValidationFailed") {
+      return c.json({ error: "Unauthorized — claim validation failed" }, 401);
+    }
+    console.warn("[Auth] JWT verify failed:", code, err?.message);
+    return c.json({ error: "Unauthorized — invalid token" }, 401);
+  }
 
-    c.set("userId", payload.sub);
-
-    // Register owner/admin accounts for unlimited credits
-    const email =
-      (payload.email as string) ||
-      (payload.primary_email as string) ||
-      (payload.email_addresses as any)?.[0]?.email_address;
-    const { registerOwnerIfAdmin } = await import("../services/credits");
-    registerOwnerIfAdmin(payload.sub, email);
-
-    await next();
-  } catch (error: any) {
-    console.error("Auth JWT verification failed:", error?.code || error?.message || error);
-    return c.json({ error: "Unauthorized - Invalid token" }, 401);
+  if (!payload.sub || typeof payload.sub !== "string") {
+    return c.json({ error: "Unauthorized — missing subject claim" }, 401);
   }
 
   c.set("userId", payload.sub);
