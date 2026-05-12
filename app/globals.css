@@ -39,7 +39,7 @@
 }
 
 /*
-  The default theme is dark to match the Lovable aesthetic.
+  The default theme is dark to match the HS Solutions aesthetic.
   We use deep purples/plums and vibrant accents.
 */
 :root {
@@ -103,7 +103,6 @@
 
 /* Hide ALL Clerk dev banners */
 div[data-clerk-banner],
-div[class*="cl-internal"],
 div[style*="position: fixed"][style*="z-index"][style*="bottom"] {
   display: none !important;
 }

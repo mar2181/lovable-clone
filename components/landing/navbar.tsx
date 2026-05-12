@@ -16,7 +16,7 @@ export function Navbar() {
             <Sparkles className="w-5 h-5 text-primary" />
           </div>
           <span className="font-bold text-xl tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-white to-white/70">
-            Lovable Clone
+            HS Solutions
           </span>
         </Link>
         <div className="flex items-center gap-4">

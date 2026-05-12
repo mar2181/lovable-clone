@@ -42,7 +42,7 @@ export function Hero() {
           transition={{ duration: 0.5, delay: 0.2 }}
           className="text-lg md:text-xl text-muted-foreground max-w-2xl mx-auto mb-12 leading-relaxed"
         >
-          Stop writing boilerplate. Start building features. Lovable Clone turns your plain English requirements into a production-ready React codebase in seconds.
+          Build apps and websites faster. HS Solutions App & Web Builder turns your plain English requirements into production-ready React code in seconds.
         </motion.p>
 
         <motion.div 

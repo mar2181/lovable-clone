@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Lovable Clone",
-  description: "AI App Builder SaaS",
+  title: "HS Solutions App & Web Builder",
+  description: "HS Solutions app and web builder",
 };
 
 export default function RootLayout({

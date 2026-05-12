@@ -1,19 +1,17 @@
 ﻿"use client";
 
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { Laptop, Smartphone, ExternalLink, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { sanitizeIcons, FORBIDDEN_ICONS, FORBIDDEN_LUCIDE_COMPONENT_IMPORTS } from "@/lib/icon-sanitizer";
+import { WORKER_URL } from "@/lib/constants";
 import {
   SandpackProvider,
   SandpackLayout,
   SandpackPreview,
 } from "@codesandbox/sandpack-react";
 import { atomDark } from "@codesandbox/sandpack-themes";
-import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
-import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
-import { useSelectStore, makeSelection } from "@/lib/select-store";
-import { toast } from "sonner";
 
 interface PreviewPanelProps {
   files: Record<string, string>;
@@ -52,63 +50,20 @@ const DEFAULT_APP_CODE = `export default function App() {
 }`;
 
 // Icons that DO NOT exist in lucide-react but AI models keep trying to use
-const FORBIDDEN_ICONS = [
-  "Facebook", "Instagram", "Twitter", "Linkedin", "Youtube", "Github",
-  "Dribbble", "Figma", "Slack", "Discord", "TikTok", "Pinterest",
-  "Snapchat", "WhatsApp", "Telegram", "Reddit", "Medium", "Twitch",
-  "Spotify", "LinkedIn", "YouTube", "GitHub",
-];
+// (re-exported from shared lib for use in the missing-icon auto-fixer below)
+const FORBIDDEN_ICONS_SET = new Set(FORBIDDEN_ICONS);
+const FORBIDDEN_LUCIDE_COMPONENT_IMPORTS_SET = new Set(FORBIDDEN_LUCIDE_COMPONENT_IMPORTS);
 
-// Only these names are safe to auto-import from lucide-react when the AI
-// references them in JSX but forgot the import. Any other PascalCase name
-// is a local component and must NOT be added to a lucide-react import.
-const SAFE_LUCIDE_ICONS = new Set([
-  "Phone", "Mail", "MapPin", "Menu", "X",
-  "ChevronRight", "ChevronDown", "ChevronUp",
-  "ArrowRight", "ArrowUp", "ArrowLeft",
-  "Star", "Heart", "Clock", "Calendar",
-  "User", "Users", "Home", "Building", "Building2",
-  "Wrench", "Hammer", "PaintBucket", "Ruler",
-  "Shield", "ShieldCheck", "CheckCircle", "Check",
-  "ExternalLink", "Globe", "Send", "Search",
-  "Plus", "Minus", "Eye", "EyeOff",
-  "Camera", "Image", "Award", "Target", "TrendingUp", "DollarSign",
-  "Loader2", "Settings", "LogOut", "Trash2", "Edit", "Copy",
-  "Download", "Upload", "Share2", "Filter", "SlidersHorizontal",
-  "BarChart3", "PieChart", "Zap", "Sparkles", "Sun", "Moon",
-  "AlertCircle", "Info", "HelpCircle", "MessageCircle", "MessageSquare",
-  "Bookmark", "Tag", "Link", "Palette", "Layers", "Grid", "List",
-  "MoreHorizontal", "MoreVertical", "Play", "Pause",
-  "SquareIcon", "CircleIcon", "Triangle", "Hexagon",
-  "Move", "Maximize2", "Minimize2",
-]);
+/**
+ * Full sanitization + auto-fix missing lucide-react icon imports.
+ * The base sanitizeIcons handles forbidden icons.
+ * This adds frontend-specific logic: detecting icons used in JSX but not imported.
+ */
+function sanitizeIconsForPreview(code: string): string {
+  // Run base sanitization first
+  code = sanitizeIcons(code);
 
-function sanitizeIcons(code: string): string {
-  // Step 1: Clean up forbidden icon imports and replace with Globe
-  code = code.replace(
-    /import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/g,
-    (_match: string, imports: string) => {
-      const iconList = imports.split(",").map((s: string) => s.trim()).filter(Boolean);
-      const cleaned = iconList.filter((icon: string) => !FORBIDDEN_ICONS.includes(icon));
-      const hadForbidden = cleaned.length < iconList.length;
-      if (hadForbidden && !cleaned.includes("Globe")) cleaned.push("Globe");
-      if (cleaned.length === 0) return `import { Globe } from 'lucide-react'`;
-      return `import { ${cleaned.join(", ")} } from 'lucide-react'`;
-    }
-  );
-
-  // Step 2: Replace forbidden icon JSX usage with Globe
-  for (const icon of FORBIDDEN_ICONS) {
-    code = code.replace(new RegExp(`<${icon}(\\s[^>]*?)\\s*\\/>`, "g"), `<Globe$1 />`);
-    code = code.replace(new RegExp(`<${icon}(\\s[^>]*)?>`, "g"), `<Globe$1>`);
-    code = code.replace(new RegExp(`<\\/${icon}>`, "g"), `</Globe>`);
-  }
-
-  // Step 3: Replace react-icons and heroicons with lucide Globe
-  code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]react-icons\/[^'"]+['"]\s*;?/g, `import { Globe } from 'lucide-react';`);
-  code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]@heroicons\/[^'"]+['"]\s*;?/g, `import { Globe } from 'lucide-react';`);
-
-  // Step 4: Auto-fix missing lucide-react icon imports
+  // Auto-fix missing lucide-react icon imports
   const existingImportMatch = code.match(/import\s*\{([^}]+)\}\s*from\s*['"]lucide-react['"]/);
   const importedIcons = new Set<string>();
   if (existingImportMatch) {
@@ -127,38 +82,33 @@ function sanitizeIcons(code: string): string {
     localDeclarations.add(declMatch[1]);
   }
 
-  // Collect all names imported from ANY module (named + default imports)
+  // Collect all names imported from ANY module
   const allImportedNames = new Set<string>();
-  // Named imports: import { Foo, Bar } from '...'
   const namedImportRegex = /import\s*\{([^}]+)\}\s*from\s*['"][^'"]+['"]/g;
   let impMatch;
   while ((impMatch = namedImportRegex.exec(code)) !== null) {
     impMatch[1].split(",").map(s => s.trim()).filter(Boolean).forEach(name => {
-      const parts = name.split(/\s+as\s+/);
+      const parts = name.split(/\s+as\s+/i);
       allImportedNames.add(parts[parts.length - 1].trim());
     });
   }
-  // Default imports: import Foo from '...'  or  import Foo, { Bar } from '...'
-  const defaultImportRegex = /import\s+([A-Z][a-zA-Z0-9]*)\s*(?:,|\s+from)/g;
-  let defMatch;
-  while ((defMatch = defaultImportRegex.exec(code)) !== null) {
-    allImportedNames.add(defMatch[1]);
+  const defaultImportRegex = /import\s+([A-Z][a-zA-Z0-9]*)\s+from\s*['"][^'"]+['"]/g;
+  while ((impMatch = defaultImportRegex.exec(code)) !== null) {
+    allImportedNames.add(impMatch[1]);
   }
 
   // Find PascalCase names used as JSX self-closing: <Name ... />
-  // Only auto-import names that are KNOWN lucide-react icons — everything
-  // else is a local component and must not be added to a lucide import.
   const jsxIconUsages = new Set<string>();
   const jsxRegex = /<([A-Z][a-zA-Z0-9]+)\s[^>]*?\/>/g;
   let jsxMatch;
   while ((jsxMatch = jsxRegex.exec(code)) !== null) {
     const name = jsxMatch[1];
     if (
-      SAFE_LUCIDE_ICONS.has(name) &&
       !importedIcons.has(name) &&
       !localDeclarations.has(name) &&
       !allImportedNames.has(name) &&
-      !FORBIDDEN_ICONS.includes(name)
+      !FORBIDDEN_ICONS_SET.has(name) &&
+      !FORBIDDEN_LUCIDE_COMPONENT_IMPORTS_SET.has(name)
     ) {
       jsxIconUsages.add(name);
     }
@@ -167,7 +117,7 @@ function sanitizeIcons(code: string): string {
   // Add missing icons to the lucide-react import
   if (jsxIconUsages.size > 0 && existingImportMatch) {
     const allIcons = [...importedIcons, ...jsxIconUsages];
-    const newImport = `import { ${allIcons.join(", ")} } from 'lucide-react'`;
+    const newImport = `import { ${allIcons.join(", ")} } from 'lucide-react';`;
     code = code.replace(/import\s*\{[^}]+\}\s*from\s*['"]lucide-react['"]/, newImport);
   } else if (jsxIconUsages.size > 0 && !existingImportMatch) {
     const newImport = `import { ${[...jsxIconUsages].join(", ")} } from 'lucide-react';`;
@@ -181,19 +131,50 @@ function sanitizeIcons(code: string): string {
  * Prepare files for Sandpack's react-ts template.
  * Strips /src/ prefix since Sandpack uses flat paths (/App.tsx not /src/App.tsx).
  */
-function isValidSandpackPath(p: string): boolean {
-  if (!p || typeof p !== "string") return false;
-  // Must start with "/" and not contain traversal or null bytes
-  if (!p.startsWith("/")) return false;
-  if (p.includes("..")) return false;
-  if (p.includes("\0")) return false;
-  // Must not be the root path itself
-  if (p === "/") return false;
-  // Must contain at least one real character after the leading /
-  return p.length > 1;
+function applyPreviewAssetDataUrls(code: string, assetDataUrls: Record<string, string>): string {
+  let updated = code;
+  for (const [url, dataUrl] of Object.entries(assetDataUrls)) {
+    updated = updated.replaceAll(url, dataUrl);
+  }
+  return updated;
 }
 
-function prepareFilesForSandpack(files: Record<string, string>): Record<string, string> {
+function extractLocalAssetUrls(files: Record<string, string>): string[] {
+  const urls = new Set<string>();
+  const workerOrigin = WORKER_URL.replace(/\/$/, "");
+  const assetUrlRegex = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):\d+\/assets\/[^\s"'`)}}]+/g;
+
+  for (const content of Object.values(files)) {
+    for (const match of content.matchAll(assetUrlRegex)) {
+      urls.add(match[0]);
+    }
+  }
+
+  // Keep this narrowly scoped to local worker assets. Production HTTPS asset URLs
+  // should remain normal URLs so deployed output is not bloated with data URLs.
+  return Array.from(urls).filter((url) => {
+    try {
+      const parsed = new URL(url);
+      return parsed.pathname.startsWith("/assets/") && (
+        url.startsWith(workerOrigin) ||
+        ["localhost", "127.0.0.1", "0.0.0.0"].includes(parsed.hostname)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+async function blobToDataUrl(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error("Failed to read image blob"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function prepareFilesForSandpack(files: Record<string, string>, assetDataUrls: Record<string, string> = {}): Record<string, string> {
   const prepared: Record<string, string> = {};
 
   const SKIP_PATHS = new Set([
@@ -207,20 +188,18 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
 
   for (const [path, content] of Object.entries(files)) {
     if (SKIP_PATHS.has(path)) continue;
-    if (!isValidSandpackPath(path)) continue;
 
     let sandpackPath = path;
     if (path.startsWith("/src/")) {
       sandpackPath = "/" + path.slice(5);
     }
 
-    // Re-validate after transformation
-    if (!isValidSandpackPath(sandpackPath)) continue;
+    const contentWithPreviewAssets = applyPreviewAssetDataUrls(content, assetDataUrls);
 
     if (sandpackPath.match(/\.(tsx?|jsx?|js)$/)) {
-      prepared[sandpackPath] = sanitizeIcons(content);
+      prepared[sandpackPath] = sanitizeIconsForPreview(contentWithPreviewAssets);
     } else {
-      prepared[sandpackPath] = content;
+      prepared[sandpackPath] = contentWithPreviewAssets;
     }
   }
 
@@ -234,110 +213,7 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
 export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [key, setKey] = useState(0);
-
-  // ── Selection mode ──────────────────────────────────────────────
-  const isModeActive = useSelectStore((s) => s.isModeActive);
-  const setModeActive = useSelectStore((s) => s.setModeActive);
-  const setSelection = useSelectStore((s) => s.setSelection);
-  const clearSelection = useSelectStore((s) => s.clear);
-  const exitSelectMode = useSelectStore((s) => s.exit);
-  const sandpackWrapperRef = useRef<HTMLDivElement | null>(null);
-  const enableTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const expectedOriginRef = useRef<string | null>(null);
-  const [showNewTooltip, setShowNewTooltip] = useState(false);
-
-  // First-time tooltip
-  useEffect(() => {
-    const seen = localStorage.getItem("lovable.selectMode.seen");
-    if (!seen) setShowNewTooltip(true);
-    const timer = setTimeout(() => {
-      setShowNewTooltip(false);
-      if (!seen) localStorage.setItem("lovable.selectMode.seen", "1");
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, []);
-
-  const getIframe = useCallback((): HTMLIFrameElement | null => {
-    return sandpackWrapperRef.current?.querySelector("iframe") ?? null;
-  }, []);
-
-  const sendToIframe = useCallback((type: string, payload: unknown = {}) => {
-    const iframe = getIframe();
-    if (!iframe?.contentWindow) return;
-    try {
-      const origin = expectedOriginRef.current || "*";
-      iframe.contentWindow.postMessage(
-        { source: "lovable-select", v: 1, type, payload },
-        origin,
-      );
-    } catch {
-      // cross-origin — ignore
-    }
-  }, [getIframe]);
-
-  // Send enable/disable when mode toggles
-  useEffect(() => {
-    const iframe = getIframe();
-    if (!iframe) return;
-
-    try {
-      expectedOriginRef.current = new URL(iframe.src).origin;
-    } catch {
-      expectedOriginRef.current = null;
-    }
-
-    if (isModeActive) {
-      // Clear any stale enable timeout
-      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-
-      enableTimerRef.current = setTimeout(() => {
-        // If the iframe never acknowledged ready, show toast and exit
-        if (isModeActive) {
-          toast.error("Preview not ready — try again in a moment");
-          exitSelectMode();
-        }
-      }, 1500);
-
-      sendToIframe("enable");
-    } else {
-      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-      clearSelection();
-      sendToIframe("disable");
-    }
-
-    return () => {
-      if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-    };
-  }, [isModeActive]);
-
-  // Listen for messages from the iframe
-  useEffect(() => {
-    const handler = (event: MessageEvent) => {
-      const d = event.data;
-      if (!d || d.source !== "lovable-select" || d.v !== 1) return;
-
-      // Validate origin when possible
-      const iframe = getIframe();
-      if (iframe && expectedOriginRef.current && event.origin !== expectedOriginRef.current) return;
-
-      if (d.type === "selected") {
-        if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-        setSelection(makeSelection(d.payload));
-      } else if (d.type === "cleared") {
-        clearSelection();
-      } else if (d.type === "ready") {
-        if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-        // Re-send enable if mode is active (handles Sandpack remount)
-        if (useSelectStore.getState().isModeActive) {
-          sendToIframe("enable");
-        }
-      }
-    };
-
-    window.addEventListener("message", handler);
-    return () => window.removeEventListener("message", handler);
-  }, [setSelection, clearSelection, sendToIframe, getIframe]);
-  // ── End selection mode ──────────────────────────────────────────
+  const [assetDataUrls, setAssetDataUrls] = useState<Record<string, string>>({});
 
   const handleRefresh = () => {
     setKey(prev => prev + 1);
@@ -347,6 +223,45 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
     const appContent = files["/src/App.tsx"] || files["/App.tsx"] || "";
     return appContent.length.toString() + "_" + Object.keys(files).length.toString();
   }, [files]);
+
+  const localAssetUrls = useMemo(() => extractLocalAssetUrls(files), [files]);
+  const localAssetFingerprint = localAssetUrls.join("|");
+
+  useEffect(() => {
+    if (localAssetUrls.length === 0) return;
+
+    let cancelled = false;
+
+    async function inlineLocalAssetsForHttpsSandpack() {
+      const loaded: Record<string, string> = {};
+
+      await Promise.all(localAssetUrls.map(async (url) => {
+        if (assetDataUrls[url]) return;
+
+        try {
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`Asset fetch failed: ${res.status}`);
+          const contentType = res.headers.get("content-type") || "";
+          if (!contentType.startsWith("image/")) return;
+          loaded[url] = await blobToDataUrl(await res.blob());
+        } catch (error) {
+          console.warn("Could not inline local asset for Sandpack preview", url, error);
+        }
+      }));
+
+      if (!cancelled && Object.keys(loaded).length > 0) {
+        setAssetDataUrls((prev) => ({ ...prev, ...loaded }));
+      }
+    }
+
+    inlineLocalAssetsForHttpsSandpack();
+
+    return () => {
+      cancelled = true;
+    };
+    // assetDataUrls is intentionally excluded to avoid refetch loops; existing URLs are checked inside.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localAssetFingerprint]);
 
   const isFirstRender = useRef(true);
   useEffect(() => {
@@ -358,16 +273,14 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
       setKey(prev => prev + 1);
     }, 800);
     return () => clearTimeout(timer);
-  }, [filesFingerprint]);
+  }, [filesFingerprint, assetDataUrls]);
 
   const sandpackFiles = Object.keys(files).length > 0
-    ? prepareFilesForSandpack(files)
+    ? prepareFilesForSandpack(files, assetDataUrls)
     : { "/App.tsx": DEFAULT_APP_CODE };
 
   const activeFiles: Record<string, string> = {
     "/public/index.html": SANDPACK_INDEX_HTML,
-    // Always inject shadcn/ui components as base — AI files override if present
-    ...SANDPACK_SHADCN_FILES,
     ...sandpackFiles,
   };
 
@@ -375,22 +288,6 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
     <div className="flex flex-col h-full bg-zinc-950">
       <div className="h-12 border-b border-white/5 bg-zinc-950/50 flex items-center justify-between px-4 shrink-0 z-20 relative">
         <div className="flex bg-zinc-900 rounded-lg p-1 border border-white/5">
-          <SelectModeToggle />
-          {showNewTooltip && (
-            <div
-              className="absolute top-full left-0 mt-2 z-50 bg-blue-600 text-white text-xs px-3 py-2 rounded-lg shadow-lg max-w-[260px] animate-in fade-in slide-in-from-top-1"
-              onClick={() => { setShowNewTooltip(false); localStorage.setItem("lovable.selectMode.seen", "1"); }}
-            >
-              <button
-                className="absolute top-1 right-1.5 text-blue-200 hover:text-white"
-                onClick={() => { setShowNewTooltip(false); localStorage.setItem("lovable.selectMode.seen", "1"); }}
-              >
-                ×
-              </button>
-              New: click any element in the preview to edit it.
-            </div>
-          )}
-          <div className="w-px bg-white/10 mx-0.5" />
           <Button
             variant="ghost"
             size="sm"
@@ -461,7 +358,6 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
         )}
 
         <div
-          ref={sandpackWrapperRef}
           className={cn(
             "relative z-10 transition-all duration-300 ease-in-out overflow-hidden",
             device === "desktop"
@@ -476,12 +372,10 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
             files={activeFiles}
             customSetup={{
               dependencies: {
-                "lucide-react": "latest",
+                "lucide-react": "1.7.0",
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",
-                "clsx": "^2.1.0",
-                "tailwind-merge": "^2.2.1",
                 ...dependencies
               }
             }}

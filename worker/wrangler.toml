@@ -35,4 +35,3 @@ crons = ["0 3 * * *"]
 # the frontend's NEXT_PUBLIC_WORKER_URL in .env.local.
 [dev]
 port = 8799
-

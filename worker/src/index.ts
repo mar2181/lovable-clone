@@ -11,8 +11,8 @@ import vercelRouter from "./routes/vercel";
 import templateRouter from "./routes/template";
 import blogRouter from "./routes/blog";
 import bridgeRouter from "./routes/bridge";
-import attachmentsRouter from "./routes/attachments";
-import supabaseRouter from "./routes/supabase";
+import buildRouter from "./routes/build";
+import assetsRouter from "./routes/assets";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -20,7 +20,10 @@ export type Bindings = {
   KV_METADATA: KVNamespace;
   CLERK_SECRET_KEY: string;
   NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: string;
+  CLERK_DOMAIN: string; // Clerk frontend API domain (e.g. "clerk.your-app.com")
   OPENROUTER_API_KEY: string;
+  OPENAI_API_KEY?: string;
+  ANTHROPIC_API_KEY?: string;
   FAL_KEY: string;
   ENVIRONMENT: string;
   GITHUB_PAT: string;
@@ -28,7 +31,7 @@ export type Bindings = {
   MCP_API_KEY: string;
   R2_PUBLIC_DOMAIN: string;
   SUPABASE_PAT: string;
-  ALLOWED_ORIGINS: string;
+  ALLOWED_ORIGINS: string; // Comma-separated list of allowed CORS origins
 };
 
 // Define custom variables that persist through the request (like userId)
@@ -80,11 +83,12 @@ app.route("/api/vercel", vercelRouter);
 app.route("/api/template", templateRouter);
 app.route("/api/blog", blogRouter);
 app.route("/api/bridge", bridgeRouter);
-app.route("/api/attachments", attachmentsRouter);
-app.route("/api/supabase", supabaseRouter);
+app.route("/api/build", buildRouter);
+app.route("/api/assets", assetsRouter);
+app.route("/assets", assetsRouter);
 
 app.get("/", (c) => {
-  return c.text("Lovable Clone API is running!");
+  return c.text("HS Solutions API is running!");
 });
 
 app.get("/health", (c) => {

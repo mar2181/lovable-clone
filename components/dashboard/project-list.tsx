@@ -19,36 +19,54 @@ export function ProjectList() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Set<string>>(new Set());
   const { getToken, isLoaded, isSignedIn } = useAuth();
 
-  useEffect(() => {
-    async function loadProjects() {
-      if (!isLoaded || !isSignedIn) return;
-      
-      try {
-        const token = await getToken();
-        const res = await fetch(`${WORKER_URL}/api/projects`, {
-          headers: {
-            Authorization: `Bearer ${token}`
-          }
-        });
+  async function loadProjects() {
+    if (!isLoaded || !isSignedIn) return;
 
-        if (!res.ok) {
-          throw new Error("Failed to load projects");
-        }
+    try {
+      const token = await getToken();
+      const res = await fetch(`${WORKER_URL}/api/projects`, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
 
-        const data = await res.json();
-        setProjects(data.projects || []);
-      } catch (err) {
-        console.error("Error loading projects:", err);
-        setError("Failed to load projects. Please try again.");
-      } finally {
-        setIsLoading(false);
-      }
+      if (!res.ok) throw new Error("Failed to load projects");
+
+      const data = await res.json();
+      setProjects(data.projects || []);
+    } catch (err) {
+      console.error("Error loading projects:", err);
+      setError("Failed to load projects. Please try again.");
+    } finally {
+      setIsLoading(false);
     }
+  }
 
+  useEffect(() => {
     loadProjects();
   }, [getToken, isLoaded, isSignedIn]);
+
+  async function handleDelete(projectId: string) {
+    setDeleting(prev => new Set(prev).add(projectId));
+    try {
+      const token = await getToken();
+      const res = await fetch(`${WORKER_URL}/api/projects/${projectId}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      if (!res.ok) throw new Error("Delete failed");
+      setProjects(prev => prev.filter(p => p.id !== projectId));
+    } catch (err) {
+      console.error("Error deleting project:", err);
+    } finally {
+      setDeleting(prev => {
+        const next = new Set(prev);
+        next.delete(projectId);
+        return next;
+      });
+    }
+  }
 
   if (isLoading) {
     return (
@@ -94,7 +112,7 @@ export function ProjectList() {
   return (
     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
       {projects.map((project) => (
-        <ProjectCard key={project.id} project={project} />
+        <ProjectCard key={project.id} project={project} onDelete={handleDelete} isDeleting={deleting.has(project.id)} />
       ))}
     </div>
   );
