@@ -376,6 +376,19 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
                 "react-router-dom": "^6.20.0",
                 "date-fns": "latest",
                 "framer-motion": "^10.16.0",
+                // shadcn/ui core utilities — required for AI-generated lib/utils.ts
+                "clsx": "^2.1.1",
+                "tailwind-merge": "^2.6.0",
+                "class-variance-authority": "^0.7.1",
+                "tailwindcss-animate": "^1.0.7",
+                // Radix primitives commonly imported by shadcn components
+                "@radix-ui/react-slot": "^1.1.0",
+                "@radix-ui/react-dialog": "^1.1.2",
+                "@radix-ui/react-dropdown-menu": "^2.1.2",
+                "@radix-ui/react-label": "^2.1.0",
+                "@radix-ui/react-slider": "^1.2.1",
+                "@radix-ui/react-tabs": "^1.1.1",
+                "@radix-ui/react-tooltip": "^1.1.4",
                 ...dependencies
               }
             }}
