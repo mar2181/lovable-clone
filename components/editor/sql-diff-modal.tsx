@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Shield, AlertTriangle, CheckCircle2, Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { runSql } from "@/lib/supabase-client";
 
 interface MigrationProposal {

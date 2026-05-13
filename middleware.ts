@@ -1,8 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from '@clerk/nextjs/server'
 import { NextResponse } from 'next/server'
 
-const DEV_BYPASS = process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === '1'
-
 const isPublicRoute = createRouteMatcher([
   '/',
   '/sign-in(.*)',
@@ -10,6 +8,10 @@ const isPublicRoute = createRouteMatcher([
   '/api/webhooks(.*)',
   '/test-preview(.*)'
 ])
+
+const DEV_BYPASS =
+  process.env.NEXT_PUBLIC_DEV_BYPASS_AUTH === '1' ||
+  process.env.NODE_ENV === 'development'
 
 const clerkAuthMiddleware = clerkMiddleware(async (auth, request) => {
   if (!isPublicRoute(request)) {

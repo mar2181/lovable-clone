@@ -31,6 +31,7 @@ R2_PUBLIC_DOMAIN = "https://pub-e52c67ab7c214282b6a2dd26d84e0cc3.r2.dev"
 [triggers]
 crons = ["0 3 * * *"]
 
-# Local dev: pin port to avoid collision with other services
+# Local dev: pin port. Keep in sync with scripts/start-lovable-worker.sh and
+# the frontend's NEXT_PUBLIC_WORKER_URL in .env.local.
 [dev]
-port = 8788
+port = 8799

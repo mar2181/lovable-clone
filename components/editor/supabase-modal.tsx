@@ -4,7 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import { Search, ExternalLink, Loader2, AlertCircle, Database } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import {
   listProjects, linkProject,
   type SupabaseProject, type SupabaseLinkInfo,

@@ -2,7 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { RefreshCw, Loader2, Shield, ShieldOff, Columns3 } from "lucide-react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth } from "@/lib/dev-auth";
 import { getSchema, getMigrationHistory, type SupabaseTable } from "@/lib/supabase-client";
 
 interface SupabaseSchemaPanelProps {
