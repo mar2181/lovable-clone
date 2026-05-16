@@ -27,6 +27,12 @@ GITHUB_PAT=""
 # Get at: https://vercel.com/account/tokens
 VERCEL_API_KEY=""
 
+# Supabase Management API PAT — used for listing/linking Supabase projects
+# Get at: https://app.supabase.com/account/tokens
+# NOTE: This is NOT the same as the anon/service-role keys from a project.
+# Without this, the "Connect Supabase" button will show an error banner.
+SUPABASE_PAT=""
+
 # CORS — extra allowed origins (comma-separated)
 # Auto-allowed: localhost ports + *.vercel.app
 # Add your custom domain here if deploying elsewhere

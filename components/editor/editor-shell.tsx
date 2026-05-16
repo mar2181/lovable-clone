@@ -6,6 +6,12 @@ import { ChatPanel } from "@/components/editor/chat-panel";
 import { WorkspacePanel } from "@/components/editor/workspace-panel";
 import { EditorHeader } from "@/components/editor/editor-header";
 import { ProjectMemory } from "@/components/editor/project-memory";
+import { SupabaseButton } from "@/components/editor/supabase-button";
+import { SupabaseModal } from "@/components/editor/supabase-modal";
+import { SupabaseStatusMenu } from "@/components/editor/supabase-status-menu";
+import { SupabaseSchemaPanel } from "@/components/editor/supabase-schema-panel";
+import { SupabaseBanner } from "@/components/editor/supabase-banner";
+import { getConnectStatus, type SupabaseLinkInfo } from "@/lib/supabase-client";
 import { WORKER_URL } from "@/lib/constants";
 
 export function EditorShell({ projectId }: { projectId: string }) {
@@ -13,6 +19,11 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const [dependencies, setDependencies] = useState<Record<string, string>>({});
   const [isMemoryOpen, setIsMemoryOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(400); // pixels
+  const [supabaseLink, setSupabaseLink] = useState<SupabaseLinkInfo | null>(null);
+  const [supabaseModalOpen, setSupabaseModalOpen] = useState(false);
+  const [supabaseMenuOpen, setSupabaseMenuOpen] = useState(false);
+  const [supabaseSchemaOpen, setSupabaseSchemaOpen] = useState(false);
+  const [supabasePatMissing, setSupabasePatMissing] = useState(false);
   const isDragging = useRef(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
@@ -39,6 +50,23 @@ export function EditorShell({ projectId }: { projectId: string }) {
       }
     }
     loadProject();
+  }, [projectId, getToken]);
+
+  useEffect(() => {
+    async function probeSupabase() {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const status = await getConnectStatus(token, projectId);
+        setSupabasePatMissing(!status.patConfigured);
+        if (status.linked && status.link) {
+          setSupabaseLink(status.link);
+        }
+      } catch {
+        // Swallow — the banner stays hidden if the probe itself fails.
+      }
+    }
+    probeSupabase();
   }, [projectId, getToken]);
 
   const handleFileChange = (filename: string, content: string) => {
@@ -84,10 +112,46 @@ export function EditorShell({ projectId }: { projectId: string }) {
     };
   }, []);
 
+  const supabaseSlot = (
+    <div className="relative">
+      <SupabaseButton
+        projectId={projectId}
+        onOpenModal={() => setSupabaseModalOpen(true)}
+        onOpenMenu={() => setSupabaseMenuOpen((v) => !v)}
+        onLinkUpdate={setSupabaseLink}
+      />
+      {supabaseLink && (
+        <SupabaseStatusMenu
+          projectId={projectId}
+          link={supabaseLink}
+          open={supabaseMenuOpen}
+          onClose={() => setSupabaseMenuOpen(false)}
+          onUnlinked={() => setSupabaseLink(null)}
+          onViewSchema={() => setSupabaseSchemaOpen(true)}
+        />
+      )}
+    </div>
+  );
+
   return (
     <div className="flex flex-col h-screen w-full bg-zinc-950 text-foreground">
-      <EditorHeader projectId={projectId} onOpenMemory={() => setIsMemoryOpen(true)} contextFiles={files} onUpdateFiles={setFiles} />
+      <EditorHeader projectId={projectId} onOpenMemory={() => setIsMemoryOpen(true)} contextFiles={files} onUpdateFiles={setFiles} supabaseSlot={supabaseSlot} />
+      <SupabaseBanner visible={supabasePatMissing} onReconnect={() => setSupabaseModalOpen(true)} />
       <ProjectMemory projectId={projectId} isOpen={isMemoryOpen} onClose={() => setIsMemoryOpen(false)} />
+      <SupabaseModal
+        projectId={projectId}
+        open={supabaseModalOpen}
+        onClose={() => setSupabaseModalOpen(false)}
+        onLinked={(link) => {
+          setSupabaseLink(link);
+          setSupabasePatMissing(false);
+        }}
+      />
+      <SupabaseSchemaPanel
+        projectId={projectId}
+        open={supabaseSchemaOpen}
+        onClose={() => setSupabaseSchemaOpen(false)}
+      />
 
       <div ref={containerRef} className="flex-1 flex overflow-hidden">
         {/* Chat Panel - fixed pixel width */}

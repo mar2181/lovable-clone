@@ -13,6 +13,8 @@ import blogRouter from "./routes/blog";
 import bridgeRouter from "./routes/bridge";
 import buildRouter from "./routes/build";
 import assetsRouter from "./routes/assets";
+import shareRouter from "./routes/share";
+import supabaseRouter from "./routes/supabase";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -32,6 +34,12 @@ export type Bindings = {
   R2_PUBLIC_DOMAIN: string;
   SUPABASE_PAT: string;
   ALLOWED_ORIGINS: string; // Comma-separated list of allowed CORS origins
+  TELEGRAM_BOT_TOKEN?: string;
+  TELEGRAM_USER_ID?: string;
+  TWILIO_SID?: string;
+  TWILIO_AUTH_TOKEN?: string;
+  TWILIO_FROM?: string;
+  MARIO_PHONE?: string;
 };
 
 // Define custom variables that persist through the request (like userId)
@@ -86,6 +94,8 @@ app.route("/api/bridge", bridgeRouter);
 app.route("/api/build", buildRouter);
 app.route("/api/assets", assetsRouter);
 app.route("/assets", assetsRouter);
+app.route("/api/share", shareRouter);
+app.route("/api/supabase", supabaseRouter);
 
 app.get("/", (c) => {
   return c.text("HS Solutions API is running!");
