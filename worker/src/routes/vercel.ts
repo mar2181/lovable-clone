@@ -361,7 +361,10 @@ export default function App() {
       );
     }
 
-    // Deploy to Vercel using the v13 deployments API
+    // Deploy to Vercel using the v13 deployments API.
+    // target:"production" promotes this deployment to production, which
+    // aliases it to the project's stable hostname (e.g. {project}.vercel.app)
+    // instead of leaving it on a per-deploy hash subdomain.
     const deployRes = await fetch("https://api.vercel.com/v13/deployments", {
       method: "POST",
       headers: {
@@ -370,6 +373,7 @@ export default function App() {
       },
       body: JSON.stringify({
         name: vercelProjectName,
+        target: "production",
         files: vercelFiles.map((f) => ({
           file: f.file,
           data: f.data,
@@ -387,11 +391,28 @@ export default function App() {
       return c.json({ error: `Vercel deployment failed: ${err.substring(0, 200)}` }, 500);
     }
 
-    const deployData = (await deployRes.json()) as { url: string; id: string; readyState: string };
+    const deployData = (await deployRes.json()) as {
+      url: string;
+      id: string;
+      readyState: string;
+      alias?: string[];
+      aliasAssigned?: number | boolean;
+    };
+
+    // Pick the cleanest URL we can: the shortest production alias if Vercel
+    // assigned one (e.g. my-coffee-shop-abc12345.vercel.app), otherwise the
+    // per-deploy hash URL.
+    const aliases = Array.isArray(deployData.alias) ? deployData.alias : [];
+    const productionAlias = aliases
+      .filter((a) => typeof a === "string" && a.endsWith(".vercel.app"))
+      .sort((a, b) => a.length - b.length)[0];
+    const cleanUrl = productionAlias ? `https://${productionAlias}` : `https://${deployData.url}`;
 
     return c.json({
       success: true,
-      deploymentUrl: `https://${deployData.url}`,
+      deploymentUrl: cleanUrl,
+      previewUrl: `https://${deployData.url}`,
+      aliases: aliases.map((a) => `https://${a}`),
       deploymentId: deployData.id,
       status: deployData.readyState,
     });
