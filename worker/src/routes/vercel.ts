@@ -191,6 +191,122 @@ vercelRouter.post("/deploy", async (c) => {
       });
     }
 
+    // --- Detect framework from incoming package.json ---
+    // The default project (worker/src/ai/default-project.ts) ships a Vite
+    // package.json. Trying to build a Vite project with framework:create-react-app
+    // makes Vercel run `vite build`, which then can't find `index.html` at the
+    // project root (Vite's entry) and dies in 10ms. So detect Vite up front.
+    let framework: "vite" | "create-react-app" = "create-react-app";
+    let viteEntry = "/src/index.tsx";
+    const incomingPkgFile = vercelFiles.find((f) => f.file === "package.json");
+    if (incomingPkgFile) {
+      try {
+        const pkg = JSON.parse(incomingPkgFile.data) as {
+          scripts?: Record<string, string>;
+          dependencies?: Record<string, string>;
+          devDependencies?: Record<string, string>;
+        };
+        const buildScript = pkg.scripts?.build ?? "";
+        const hasViteDep = !!(pkg.devDependencies?.vite ?? pkg.dependencies?.vite);
+        if (/\bvite\b/.test(buildScript) || hasViteDep) {
+          framework = "vite";
+          // Vite resolves its entry through the script tag in index.html, so we
+          // just need to know which file to point at. Honor whichever entry
+          // file actually exists in the bundle.
+          const candidates = ["src/main.tsx", "src/main.jsx", "src/index.tsx", "src/index.jsx"];
+          const found = candidates.find((p) => vercelFiles.some((f) => f.file === p));
+          if (found) viteEntry = `/${found}`;
+        }
+      } catch { /* fall through with CRA default */ }
+    }
+
+    if (framework === "vite") {
+      // 1. index.html at ROOT (Vite's required build entry).
+      const hasRootIndexHtml = vercelFiles.some((f) => f.file === "index.html");
+      if (!hasRootIndexHtml) {
+        const publicHtml = vercelFiles.find((f) => f.file === "public/index.html");
+        let html: string;
+        if (publicHtml) {
+          // Reuse the project's index.html (keeps custom <title>, fonts, etc.)
+          // and inject the module entry script before </body>.
+          html = publicHtml.data;
+          if (!/<script[^>]+type=["']module["']/i.test(html)) {
+            const scriptTag = `    <script type="module" src="${viteEntry}"></script>\n  </body>`;
+            if (/<\/body>/i.test(html)) {
+              html = html.replace(/<\/body>/i, scriptTag);
+            } else {
+              html += `\n${scriptTag}\n</html>`;
+            }
+          }
+        } else {
+          html = `<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="${viteEntry}"></script>
+  </body>
+</html>`;
+        }
+        vercelFiles.push({ file: "index.html", data: html });
+      }
+
+      // 2. vite.config.ts with the React plugin.
+      const hasViteConfig = vercelFiles.some((f) =>
+        /^vite\.config\.(ts|js|mjs|mts|cjs)$/.test(f.file),
+      );
+      if (!hasViteConfig) {
+        vercelFiles.push({
+          file: "vite.config.ts",
+          data: `import { defineConfig } from "vite";
+import react from "@vitejs/plugin-react";
+
+export default defineConfig({
+  plugins: [react()],
+});
+`,
+        });
+      }
+
+      // 3. tsconfig.json — Vite-style (bundler module resolution, no emit).
+      const hasTsConfig = vercelFiles.some((f) => f.file === "tsconfig.json");
+      if (!hasTsConfig) {
+        vercelFiles.push({
+          file: "tsconfig.json",
+          data: JSON.stringify(
+            {
+              compilerOptions: {
+                target: "ES2020",
+                useDefineForClassFields: true,
+                lib: ["ES2020", "DOM", "DOM.Iterable"],
+                module: "ESNext",
+                skipLibCheck: true,
+                moduleResolution: "bundler",
+                allowImportingTsExtensions: true,
+                resolveJsonModule: true,
+                isolatedModules: true,
+                noEmit: true,
+                jsx: "react-jsx",
+                strict: false,
+                allowSyntheticDefaultImports: true,
+                esModuleInterop: true,
+              },
+              include: ["src"],
+            },
+            null,
+            2,
+          ),
+        });
+      }
+
+      // Skip CRA scaffolding entirely — Vite path is complete.
+    } else {
+
     // --- Scaffold: ensure CRA can build this project ---
 
     // 1. package.json
@@ -345,9 +461,11 @@ export default function App() {
         });
       }
     }
+    } // end of else (CRA scaffold branch)
 
     // Build env array if Supabase is linked (mirrors github.ts:65-71 pattern).
-    // CRA only exposes REACT_APP_* prefixed vars to the bundle at build time.
+    // CRA exposes REACT_APP_*; Vite exposes VITE_* — set both so client code
+    // works regardless of which template the AI shipped.
     const kv = c.env.KV_METADATA;
     const supabaseLinkRaw = projectId
       ? await kv.get(`project:${projectId}:supabase`)
@@ -355,9 +473,12 @@ export default function App() {
     const deployEnv: Array<{ key: string; value: string; type: string; target: string[] }> = [];
     if (supabaseLinkRaw) {
       const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
+      const targets = ["production", "preview"];
       deployEnv.push(
-        { key: "REACT_APP_SUPABASE_URL", value: link.restUrl, type: "plain", target: ["production", "preview"] },
-        { key: "REACT_APP_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: ["production", "preview"] },
+        { key: "REACT_APP_SUPABASE_URL", value: link.restUrl, type: "plain", target: targets },
+        { key: "REACT_APP_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: targets },
+        { key: "VITE_SUPABASE_URL", value: link.restUrl, type: "plain", target: targets },
+        { key: "VITE_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: targets },
       );
     }
 
@@ -379,7 +500,7 @@ export default function App() {
           data: f.data,
         })),
         projectSettings: {
-          framework: "create-react-app",
+          framework,
         },
         ...(deployEnv.length > 0 ? { env: deployEnv } : {}),
       }),
@@ -391,34 +512,87 @@ export default function App() {
       return c.json({ error: `Vercel deployment failed: ${err.substring(0, 200)}` }, 500);
     }
 
-    const deployData = (await deployRes.json()) as {
+    type DeploymentState = {
       url: string;
       id: string;
       readyState: string;
       alias?: string[];
       aliasAssigned?: number | boolean;
     };
+    let state = (await deployRes.json()) as DeploymentState;
 
-    // Pick the cleanest URL we can: the shortest production alias if Vercel
-    // assigned one (e.g. my-coffee-shop-abc12345.vercel.app), otherwise the
-    // per-deploy hash URL.
-    const aliases = Array.isArray(deployData.alias) ? deployData.alias : [];
+    // Poll until the deployment finishes building. We cannot return the URL
+    // before READY because (a) the per-deploy URL serves a Vercel "deploying"
+    // page during build, and (b) the production alias does not resolve at all
+    // until READY — it returns DEPLOYMENT_NOT_FOUND, which is exactly the 404
+    // Mario was seeing in the browser.
+    const TERMINAL = new Set(["READY", "ERROR", "CANCELED"]);
+    const POLL_INTERVAL_MS = 3000;
+    const MAX_ATTEMPTS = 60; // ~3 minutes upper bound for CRA builds
+    for (let attempt = 0; attempt < MAX_ATTEMPTS && !TERMINAL.has(state.readyState); attempt++) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      const pollRes = await fetch(
+        `https://api.vercel.com/v13/deployments/${state.id}`,
+        { headers: { Authorization: `Bearer ${vercelToken}` } },
+      );
+      if (pollRes.ok) {
+        state = (await pollRes.json()) as DeploymentState;
+      }
+    }
+
+    if (state.readyState === "ERROR") {
+      // Pull the build error so the UI can show something useful.
+      let buildError = "Build failed";
+      try {
+        const eventsRes = await fetch(
+          `https://api.vercel.com/v3/deployments/${state.id}/events?builds=1&direction=backward&limit=20`,
+          { headers: { Authorization: `Bearer ${vercelToken}` } },
+        );
+        if (eventsRes.ok) {
+          const events = (await eventsRes.json()) as Array<{ text?: string; type?: string }>;
+          const errLine = events.reverse().find(
+            (e) => e?.type === "stderr" || (e?.text && /error/i.test(e.text)),
+          );
+          if (errLine?.text) buildError = errLine.text.slice(0, 400);
+        }
+      } catch { /* fall through with generic message */ }
+      return c.json({ error: `Vercel build failed: ${buildError}`, deploymentId: state.id }, 500);
+    }
+
+    if (!TERMINAL.has(state.readyState)) {
+      // Build is still queued/building after 3 minutes — return what we have
+      // so the user at least gets the per-deploy URL (which serves a Vercel
+      // progress page) instead of a stale alias that 404s.
+      return c.json({
+        success: true,
+        deploymentUrl: `https://${state.url}`,
+        previewUrl: `https://${state.url}`,
+        aliases: [],
+        deploymentId: state.id,
+        status: state.readyState,
+        warning: "Deployment still building after 3 minutes — returning per-deploy URL. Production alias will catch up when build completes.",
+      });
+    }
+
+    // READY — production alias is now live. Pick the cleanest one.
+    const aliases = Array.isArray(state.alias) ? state.alias : [];
     const productionAlias = aliases
       .filter((a) => typeof a === "string" && a.endsWith(".vercel.app"))
       .sort((a, b) => a.length - b.length)[0];
-    const cleanUrl = productionAlias ? `https://${productionAlias}` : `https://${deployData.url}`;
+    const cleanUrl = productionAlias ? `https://${productionAlias}` : `https://${state.url}`;
 
     return c.json({
       success: true,
       deploymentUrl: cleanUrl,
-      previewUrl: `https://${deployData.url}`,
+      previewUrl: `https://${state.url}`,
       aliases: aliases.map((a) => `https://${a}`),
-      deploymentId: deployData.id,
-      status: deployData.readyState,
+      deploymentId: state.id,
+      status: state.readyState,
     });
   } catch (error) {
     console.error("Vercel deploy error:", error);
-    return c.json({ error: "Failed to deploy to Vercel" }, 500);
+    const msg = error instanceof Error ? error.message : "Failed to deploy to Vercel";
+    return c.json({ error: msg }, 500);
   }
 });
 
