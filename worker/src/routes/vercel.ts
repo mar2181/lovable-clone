@@ -16,6 +16,10 @@ const DEFAULT_DEPENDENCIES: Record<string, string> = {
   "react-router-dom": "^6.20.0",
   clsx: "^2.1.0",
   "tailwind-merge": "^2.2.0",
+  typescript: "^4.9.5",
+  "@types/react": "^18.2.0",
+  "@types/react-dom": "^18.2.0",
+  "@types/node": "^18.0.0",
 };
 
 // Default browserslist that CRA requires
@@ -148,6 +152,33 @@ vercelRouter.post("/deploy", async (c) => {
       return c.json({ error: "Missing files" }, 400);
     }
 
+    // Look up the human-readable project name so Vercel project names look
+    // like "my-coffee-shop-abc12345" instead of "lovable-abc12345".
+    const userId = c.get("userId");
+    let projectSlug = "";
+    if (projectId && userId) {
+      try {
+        const raw = await c.env.KV_METADATA.get(`user:${userId}:project:${projectId}`);
+        if (raw) {
+          const meta = JSON.parse(raw) as { name?: string };
+          if (meta.name) {
+            projectSlug = meta.name
+              .toLowerCase()
+              .replace(/[^a-z0-9]+/g, "-")
+              .replace(/^-+|-+$/g, "")
+              .slice(0, 40);
+          }
+        }
+      } catch { /* fall through to default */ }
+    }
+    const idTail = projectId ? String(projectId).slice(0, 8) : "app";
+    const vercelProjectName = (projectSlug ? `${projectSlug}-${idTail}` : `lovable-${idTail}`)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 52); // Vercel project name max ≈ 100, keep headroom
+
     const projectFiles = files as Record<string, string>;
     const vercelFiles: Array<{ file: string; data: string }> = [];
 
@@ -180,7 +211,7 @@ vercelRouter.post("/deploy", async (c) => {
         file: "package.json",
         data: JSON.stringify(
           {
-            name: `lovable-project-${projectId?.slice(0, 8) || "app"}`,
+            name: vercelProjectName,
             version: "1.0.0",
             private: true,
             scripts: {
@@ -338,7 +369,7 @@ export default function App() {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        name: `lovable-${projectId?.slice(0, 8) || "app"}`,
+        name: vercelProjectName,
         files: vercelFiles.map((f) => ({
           file: f.file,
           data: f.data,
