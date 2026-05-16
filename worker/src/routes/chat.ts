@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
-import { SCAFFOLD_PROMPT, ITERATION_PROMPT } from "../ai/system-prompt";
+import { SCAFFOLD_PROMPT, ITERATION_PROMPT, ASK_PROMPT } from "../ai/system-prompt";
 import { parseStreamToJSON } from "../ai/file-parser";
 import { hasEnoughCredits, deductCredit } from "../services/credits";
 import { replaceImagePlaceholders } from "../services/image-gen";
@@ -56,11 +56,14 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64, imagesBase64 } = body;
+    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64, imagesBase64, mode: rawMode } = body;
     // Support both multi-image array (imagesBase64) and legacy single (imageBase64)
     const imageList: string[] = imagesBase64 && Array.isArray(imagesBase64)
       ? imagesBase64.slice(0, 10) // cap at 10
       : imageBase64 ? [imageBase64] : [];
+    // ASK vs BUILD mode. Default is "build" to preserve existing UX for any
+    // client that doesn't send the field.
+    const mode: "ask" | "build" = rawMode === "ask" ? "ask" : "build";
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
@@ -100,10 +103,18 @@ chatRouter.post("/:projectId", async (c) => {
     // Model ID comes from frontend (or auto-switched for vision)
     const aiModel = openrouter(effectiveModel);
 
-    // 5. Pick the system prompt based on first-prompt detection (server-side,
-    // not based on whatever context the client claims).
-    const basePrompt = isFirstPrompt ? SCAFFOLD_PROMPT : ITERATION_PROMPT;
-    console.log(`[Chat] project=${projectId} mode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`);
+    // 5. Pick the system prompt. ASK mode short-circuits the SCAFFOLD/ITERATION
+    // selection — it always uses ASK_PROMPT regardless of whether the project
+    // is fresh.
+    const basePrompt =
+      mode === "ask"
+        ? ASK_PROMPT
+        : isFirstPrompt
+          ? SCAFFOLD_PROMPT
+          : ITERATION_PROMPT;
+    console.log(
+      `[Chat] project=${projectId} requestMode=${mode} buildMode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`,
+    );
 
     // 5.1 Construct full system prompt with memory, history, and context
     const memoryBlock = projectMemory
@@ -123,13 +134,18 @@ chatRouter.post("/:projectId", async (c) => {
       ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(userFiles, null, 2)}\n`
       : "";
 
+    // The "Reply ONLY in valid JSON" trailer applies to BUILD mode only.
+    // In ASK mode the model must respond in prose — JSON envelopes are wrong.
+    const jsonTrailer =
+      mode === "ask"
+        ? ""
+        : "\n      Remember: Reply ONLY in valid JSON. No markdown ticks, no extra text.\n    ";
+
     const fullSystemPrompt = `
       ${basePrompt}
       ${memoryBlock}
       ${historyBlock}
-      ${contextBlock}
-      Remember: Reply ONLY in valid JSON. No markdown ticks, no extra text.
-    `;
+      ${contextBlock}${jsonTrailer}`;
 
     // 6. Return Streaming Server-Sent Events (SSE) Response
     return streamSSE(c, async (stream) => {
@@ -174,6 +190,36 @@ chatRouter.post("/:projectId", async (c) => {
               error: `model returned an empty response or invalid model ID (${effectiveModel}).`,
             }),
             event: "error",
+          });
+          return;
+        }
+
+        // 6.6 ASK MODE — short-circuit: no JSON parse, no version write, no
+        // file mutation. The streamed text is the entire response. Save a
+        // chat-history summary, deduct the credit, and emit `done` with the
+        // model's prose as `aiMessage` so the UI can display it cleanly.
+        if (mode === "ask") {
+          // Trim chat history bookkeeping (still useful for context next turn).
+          const promptSummary = prompt.length > 200 ? prompt.slice(0, 200) + "..." : prompt;
+          const askSummary = fullContent.length > 200 ? fullContent.slice(0, 200) + "..." : fullContent;
+          chatHistory.push({ role: "user", summary: `[ask] ${promptSummary}` });
+          chatHistory.push({ role: "assistant", summary: `[ask] ${askSummary}` });
+          const trimmedHistory = chatHistory.slice(-10);
+          await kv.put(`project:${projectId}:chat_history`, JSON.stringify(trimmedHistory));
+
+          await deductCredit(userId, 1, kv);
+
+          await stream.writeSSE({
+            data: JSON.stringify({
+              type: "done",
+              mode: "ask",
+              aiMessage: fullContent,
+              // No files mutation in ask mode — echo back the current context
+              // so the UI's "files changed" diff comes up clean (0 added/0 modified).
+              files: contextFiles,
+              dependencies: {},
+            }),
+            event: "message",
           });
           return;
         }
