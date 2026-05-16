@@ -44,13 +44,14 @@ function GitHubButton({ projectId }: { projectId: string }) {
         setState("done");
         window.open(result.repoUrl, "_blank");
       } else {
-        const err = await pushRes.json().catch(() => ({ error: "Push failed" }));
+        const err = await pushRes.json().catch(() => ({ error: `HTTP ${pushRes.status}` }));
         setState("error");
-        alert(`GitHub push failed: ${err.error || "Unknown error"}\n\nNote: GitHub integration is not yet connected. This button is ready for when you set up a GitHub token.`);
+        alert(`GitHub push failed: ${err.error || "Unknown error"}`);
       }
     } catch (err) {
       setState("error");
-      alert("GitHub push is not yet connected. The button is ready — we just need to add your GitHub token to the worker config.");
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`GitHub push failed: ${msg}`);
     } finally {
       setTimeout(() => setState("idle"), 2000);
     }
@@ -178,11 +179,19 @@ function VercelButton({ projectId }: { projectId: string }) {
         window.open(result.deploymentUrl, "_blank");
       } else {
         setState("error");
-        alert("Vercel deploy is not yet connected. The button is ready — we just need to add your Vercel token to the worker config.");
+        let detail = `HTTP ${deployRes.status}`;
+        try {
+          const body = await deployRes.json();
+          if (body?.error) detail = body.error;
+        } catch {
+          try { detail = await deployRes.text(); } catch {}
+        }
+        alert(`Vercel deploy failed: ${detail}`);
       }
-    } catch {
+    } catch (err) {
       setState("error");
-      alert("Vercel deploy is not yet connected. The button is ready — we just need to add your Vercel token.");
+      const msg = err instanceof Error ? err.message : String(err);
+      alert(`Vercel deploy failed: ${msg}`);
     } finally {
       setTimeout(() => setState("idle"), 2000);
     }
