@@ -315,6 +315,21 @@ export default function App() {
       }
     }
 
+    // Build env array if Supabase is linked (mirrors github.ts:65-71 pattern).
+    // CRA only exposes REACT_APP_* prefixed vars to the bundle at build time.
+    const kv = c.env.KV_METADATA;
+    const supabaseLinkRaw = projectId
+      ? await kv.get(`project:${projectId}:supabase`)
+      : null;
+    const deployEnv: Array<{ key: string; value: string; type: string; target: string[] }> = [];
+    if (supabaseLinkRaw) {
+      const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
+      deployEnv.push(
+        { key: "REACT_APP_SUPABASE_URL", value: link.restUrl, type: "plain", target: ["production", "preview"] },
+        { key: "REACT_APP_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: ["production", "preview"] },
+      );
+    }
+
     // Deploy to Vercel using the v13 deployments API
     const deployRes = await fetch("https://api.vercel.com/v13/deployments", {
       method: "POST",
@@ -331,7 +346,7 @@ export default function App() {
         projectSettings: {
           framework: "create-react-app",
         },
-        env: deployEnv,
+        ...(deployEnv.length > 0 ? { env: deployEnv } : {}),
       }),
     });
 

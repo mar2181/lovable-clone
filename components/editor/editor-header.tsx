@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { ArrowLeft, Share, Settings, Download, Loader2, GitBranch, Rocket } from "lucide-react";
+import { ArrowLeft, Share, Settings, Download, Loader2, GitBranch, Rocket, Check } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ExportButton } from "@/components/editor/export-button";
 import { BlogGenerator } from "@/components/editor/blog-generator";
@@ -60,12 +60,89 @@ function GitHubButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 inline-flex"
       onClick={handlePush}
       disabled={state === "pushing"}
     >
       {state === "pushing" ? <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" /> : <GitBranch className="w-3.5 h-3.5 mr-2" />}
       GitHub
+    </Button>
+  );
+}
+
+function ShareToPhoneButton({ projectId }: { projectId: string }) {
+  const [state, setState] = useState<"idle" | "sending" | "done" | "error">("idle");
+  const { getToken } = useAuth();
+
+  const handleShare = async () => {
+    setState("sending");
+    try {
+      const token = await getToken();
+      const shareUrl =
+        typeof window !== "undefined"
+          ? `${window.location.origin}/editor/${projectId}`
+          : `/editor/${projectId}`;
+
+      const res = await fetch(`${WORKER_URL}/api/share/phone`, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          projectId,
+          channel: "telegram",
+          url: shareUrl,
+          message: `📱 HS App Builder — preview on your phone:\n${shareUrl}`,
+        }),
+      });
+
+      const data = await res.json().catch(() => ({}));
+
+      if (res.ok && data.ok) {
+        setState("done");
+      } else {
+        setState("error");
+        const detail =
+          data?.results?.[0]?.detail || data?.error || `HTTP ${res.status}`;
+        alert(`Couldn't send the preview link to your phone.\n\nDetail: ${detail}`);
+      }
+    } catch (err) {
+      setState("error");
+      alert(
+        `Couldn't reach the worker. Make sure it's running on ${WORKER_URL}.\n\n${
+          (err as Error).message
+        }`
+      );
+    } finally {
+      setTimeout(() => setState("idle"), 2500);
+    }
+  };
+
+  const Icon =
+    state === "sending" ? Loader2 : state === "done" ? Check : Share;
+  const iconClass =
+    state === "sending"
+      ? "w-4 h-4 mr-2 animate-spin"
+      : "w-4 h-4 mr-2";
+  const label =
+    state === "sending"
+      ? "Sending..."
+      : state === "done"
+      ? "Sent to phone"
+      : "Share";
+
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden lg:inline-flex"
+      onClick={handleShare}
+      disabled={state === "sending"}
+      title="Send this preview to your phone via Telegram"
+    >
+      <Icon className={iconClass} />
+      {label}
     </Button>
   );
 }
@@ -115,7 +192,7 @@ function VercelButton({ projectId }: { projectId: string }) {
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-white/30 hidden xl:inline-flex"
+      className="h-8 bg-white/5 border-white/10 hover:border-white/30 inline-flex"
       onClick={handleDeploy}
       disabled={state === "deploying"}
     >
@@ -154,10 +231,7 @@ export function EditorHeader({ projectId, onOpenMemory, contextFiles, onUpdateFi
           <Settings className="w-4 h-4 mr-2" />
           Settings
         </Button>
-        <Button variant="outline" size="sm" className="h-8 bg-white/5 border-white/10 hidden lg:inline-flex">
-          <Share className="w-4 h-4 mr-2" />
-          Share
-        </Button>
+        <ShareToPhoneButton projectId={projectId} />
         <GitHubButton projectId={projectId} />
         <VercelButton projectId={projectId} />
         {supabaseSlot}

@@ -96,10 +96,17 @@ supabaseRouter.post("/link", async (c) => {
   if (!projectExists) return c.json({ error: "Project not found" }, 404);
 
   try {
-    const [projectMeta, apiKeys] = await Promise.all([
+    const [projectMetaRaw, apiKeys] = await Promise.all([
       managementGet(pat, `/v1/projects/${ref}`),
       managementGet(pat, `/v1/projects/${ref}/api-keys`),
     ]);
+    const projectMeta = projectMetaRaw as {
+      name: string;
+      region: string;
+      organization_id: string;
+      organization_name?: string;
+      status: string;
+    };
 
     const anonKey = (apiKeys as any[]).find((k: any) => /anon/i.test(k.name || ""))?.api_key
       ?? (apiKeys as any[]).find((k: any) => k.type === "anon")?.api_key
