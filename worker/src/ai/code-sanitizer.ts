@@ -1,7 +1,7 @@
 // Post-processing sanitizer for AI-generated code
+// Fixes common issues that crash Sandpack previews
 
 import { VALID_LUCIDE_ICONS } from "../data/lucide-valid-icons";
-// Fixes common issues that crash Sandpack previews
 
 // Icons that DO NOT exist in lucide-react but AI models frequently try to use
 const FORBIDDEN_ICONS = [
