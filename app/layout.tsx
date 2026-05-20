@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { ClerkProvider } from "@/lib/dev-auth";
+import { PetConcierge } from "@/components/pet-concierge";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -28,6 +29,7 @@ export default function RootLayout({
       <html lang="en" className="dark" suppressHydrationWarning>
         <body className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-background font-sans antialiased flex flex-col`}>
           {children}
+          <PetConcierge />
         </body>
       </html>
     </ClerkProvider>
