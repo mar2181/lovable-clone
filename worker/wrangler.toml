@@ -14,6 +14,7 @@ id = "762c5fc8290c44259c67922b75fa2d13"
 
 [vars]
 ENVIRONMENT = "development"
+DEV_BYPASS_AUTH = "1"
 
 # R2 public domain for attachment URLs. Set this to your R2 bucket's public
 # custom domain or the r2.dev domain (e.g. "https://pub-<hash>.r2.dev").

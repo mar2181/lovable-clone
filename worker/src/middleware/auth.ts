@@ -52,14 +52,17 @@ export async function authMiddleware(c: Context, next: Next) {
   }
 
   // ---------------------------------------------------------------------------
-  // Development dev-bypass — matches the frontend lib/dev-auth.tsx fake user.
-  // Only fires when ENVIRONMENT === "development" AND the bearer token is the
-  // exact dev token. Owner email is registered so isOwner() returns true and
-  // the dashboard shows the unlimited badge + project list.
+  // Development / dev-bypass — matches the frontend lib/dev-auth.tsx fake user.
+  // Fires when ENVIRONMENT === "development" (local dev) OR DEV_BYPASS_AUTH=1
+  // (production dev-bypass, e.g. for internal testing) AND the bearer token is
+  // the exact dev token. Owner email is registered so isOwner() returns true
+  // and the dashboard shows the unlimited badge + project list.
   // ---------------------------------------------------------------------------
   const devAuthHeader = c.req.header("Authorization");
+  const devBypassEnabled =
+    c.env.ENVIRONMENT === "development" || c.env.DEV_BYPASS_AUTH === "1";
   if (
-    c.env.ENVIRONMENT === "development" &&
+    devBypassEnabled &&
     devAuthHeader === "Bearer dev-local-user"
   ) {
     const devUserId = "dev-local-user";

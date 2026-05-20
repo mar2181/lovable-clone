@@ -28,6 +28,7 @@ export type Bindings = {
   ANTHROPIC_API_KEY?: string;
   FAL_KEY: string;
   ENVIRONMENT: string;
+  DEV_BYPASS_AUTH?: string;
   GITHUB_PAT: string;
   VERCEL_API_KEY: string;
   MCP_API_KEY: string;

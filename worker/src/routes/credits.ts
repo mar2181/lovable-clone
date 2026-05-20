@@ -19,7 +19,9 @@ creditsRouter.get("/", async (c) => {
     updatedAt: new Date().toISOString()
   };
 
-  if (c.env.ENVIRONMENT === "development") {
+  const devBypassEnabled =
+    c.env.ENVIRONMENT === "development" || c.env.DEV_BYPASS_AUTH === "1";
+  if (devBypassEnabled) {
     return c.json({ credits: devCredits });
   }
 
