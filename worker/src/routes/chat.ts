@@ -7,8 +7,24 @@ import { parseStreamToJSON } from "../ai/file-parser";
 import { hasEnoughCredits, deductCredit } from "../services/credits";
 import { replaceImagePlaceholders } from "../services/image-gen";
 import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
-import { streamText } from "ai";
+import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
+import { buildAskTools } from "../ai/tools";
+
+// Models that we've confirmed handle OpenAI-style tool calls reliably via
+// OpenRouter. Ask mode forces effectiveModel onto this list before passing
+// `tools` to streamText so we don't silently land on a model that ignores
+// them. Vision already auto-switches to gpt-4.1; this is the same idea for
+// tool use.
+const TOOL_CAPABLE_MODELS = new Set<string>([
+  "openai/gpt-4.1",
+  "openai/gpt-4o",
+  "openai/gpt-4o-mini",
+  "anthropic/claude-sonnet-4",
+  "anthropic/claude-haiku-4",
+  "anthropic/claude-opus-4",
+]);
+const ASK_TOOL_FALLBACK_MODEL = "openai/gpt-4.1";
 
 const chatRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -94,13 +110,22 @@ chatRouter.post("/:projectId", async (c) => {
     // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
     // doesn't lie to the user about which model handled their request.
     const VISION_MODEL = "openai/gpt-4.1";
-    const effectiveModel = imageList.length > 0 ? VISION_MODEL : model;
+    let effectiveModel = imageList.length > 0 ? VISION_MODEL : model;
 
     if (imageList.length > 0 && model !== VISION_MODEL) {
       console.log(`${imageList.length} image(s) attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`);
     }
 
-    // Model ID comes from frontend (or auto-switched for vision)
+    // Ask mode wants real tool calls (web_search, web_fetch). If the user
+    // picked a model we haven't confirmed supports tool use, fall back to a
+    // known-good one. Build mode keeps whatever the user picked — no tools
+    // are passed there, so model choice doesn't matter for this concern.
+    if (mode === "ask" && !TOOL_CAPABLE_MODELS.has(effectiveModel)) {
+      console.log(`[Chat] Ask mode: model "${effectiveModel}" not in tool-capable allowlist — switching to ${ASK_TOOL_FALLBACK_MODEL}`);
+      effectiveModel = ASK_TOOL_FALLBACK_MODEL;
+    }
+
+    // Model ID comes from frontend (or auto-switched for vision/tools)
     const aiModel = openrouter(effectiveModel);
 
     // 5. Pick the system prompt. ASK mode short-circuits the SCAFFOLD/ITERATION
@@ -160,10 +185,17 @@ chatRouter.post("/:projectId", async (c) => {
           userContent.push({ type: "image", image: binary, mimeType });
         }
 
+        // Ask mode gets real tools (web_search + web_fetch). Build mode
+        // doesn't — it must emit a strict JSON envelope, and interleaving
+        // tool calls before that envelope would break the parser. stepCountIs
+        // caps a single Ask turn at 5 model/tool steps so a runaway prompt
+        // can't burn Tavily credits.
+        const askTools = mode === "ask" ? buildAskTools(c.env) : undefined;
         const result = await streamText({
           model: aiModel,
           system: fullSystemPrompt,
           messages: [{ role: "user", content: userContent }],
+          ...(askTools ? { tools: askTools, stopWhen: stepCountIs(5) } : {}),
         });
 
         let fullContent = "";

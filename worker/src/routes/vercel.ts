@@ -463,23 +463,20 @@ export default function App() {
     }
     } // end of else (CRA scaffold branch)
 
-    // Build env array if Supabase is linked (mirrors github.ts:65-71 pattern).
+    // Build env object if Supabase is linked.
     // CRA exposes REACT_APP_*; Vite exposes VITE_* — set both so client code
     // works regardless of which template the AI shipped.
     const kv = c.env.KV_METADATA;
     const supabaseLinkRaw = projectId
       ? await kv.get(`project:${projectId}:supabase`)
       : null;
-    const deployEnv: Array<{ key: string; value: string; type: string; target: string[] }> = [];
+    const deployEnv: Record<string, string> = {};
     if (supabaseLinkRaw) {
       const link: SupabaseLinkRecord = JSON.parse(supabaseLinkRaw);
-      const targets = ["production", "preview"];
-      deployEnv.push(
-        { key: "REACT_APP_SUPABASE_URL", value: link.restUrl, type: "plain", target: targets },
-        { key: "REACT_APP_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: targets },
-        { key: "VITE_SUPABASE_URL", value: link.restUrl, type: "plain", target: targets },
-        { key: "VITE_SUPABASE_ANON_KEY", value: link.anonKey, type: "plain", target: targets },
-      );
+      deployEnv.REACT_APP_SUPABASE_URL = link.restUrl;
+      deployEnv.REACT_APP_SUPABASE_ANON_KEY = link.anonKey;
+      deployEnv.VITE_SUPABASE_URL = link.restUrl;
+      deployEnv.VITE_SUPABASE_ANON_KEY = link.anonKey;
     }
 
     // Deploy to Vercel using the v13 deployments API.
@@ -502,7 +499,7 @@ export default function App() {
         projectSettings: {
           framework,
         },
-        ...(deployEnv.length > 0 ? { env: deployEnv } : {}),
+        env: deployEnv,
       }),
     });
 

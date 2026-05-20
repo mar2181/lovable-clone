@@ -18,6 +18,12 @@ OPENROUTER_API_KEY=""
 # Get your key at: https://fal.ai/dashboard/keys
 FAL_KEY=""
 
+# Tavily — powers the Ask-mode web_search + web_fetch tools the in-app AI calls
+# Get your key at: https://app.tavily.com/home (free tier: 1000 searches/month)
+# Without this, Ask mode still works but the model will return "tool unavailable"
+# if it tries to browse.
+TAVILY_API_KEY=""
+
 # GitHub PAT — used for pushing generated code to GitHub
 # Create at: https://github.com/settings/tokens
 # Needs: repo (full control of private repositories)

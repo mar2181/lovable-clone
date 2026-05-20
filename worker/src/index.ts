@@ -31,6 +31,7 @@ export type Bindings = {
   GITHUB_PAT: string;
   VERCEL_API_KEY: string;
   MCP_API_KEY: string;
+  TAVILY_API_KEY: string; // Tavily web search/extract — powers Ask-mode web_search + web_fetch tools
   R2_PUBLIC_DOMAIN: string;
   SUPABASE_PAT: string;
   ALLOWED_ORIGINS: string; // Comma-separated list of allowed CORS origins
