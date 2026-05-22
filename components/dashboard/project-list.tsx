@@ -5,6 +5,7 @@ import { useAuth } from "@/lib/dev-auth";
 import { Loader2, Plus, Code2 } from "lucide-react";
 import { WORKER_URL } from "@/lib/constants";
 import { ProjectCard } from "@/components/dashboard/project-card";
+import { CloneProjectDialog } from "@/components/dashboard/clone-project-dialog";
 import { Button } from "@/components/ui/button";
 
 interface Project {
@@ -21,6 +22,7 @@ export function ProjectList() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<Set<string>>(new Set());
+  const [cloneSource, setCloneSource] = useState<{ id: string; name: string } | null>(null);
   const { getToken, isLoaded, isSignedIn } = useAuth();
 
   async function loadProjects() {
@@ -69,6 +71,11 @@ export function ProjectList() {
     }
   }
 
+  function handleClone(projectId: string) {
+    const project = projects.find(p => p.id === projectId);
+    if (project) setCloneSource({ id: project.id, name: project.name });
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-col items-center justify-center py-20">
@@ -111,10 +118,23 @@ export function ProjectList() {
   }
 
   return (
-    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-      {projects.map((project) => (
-        <ProjectCard key={project.id} project={project} onDelete={handleDelete} isDeleting={deleting.has(project.id)} />
-      ))}
-    </div>
+    <>
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        {projects.map((project) => (
+          <ProjectCard
+            key={project.id}
+            project={project}
+            onDelete={handleDelete}
+            isDeleting={deleting.has(project.id)}
+            onClone={handleClone}
+          />
+        ))}
+      </div>
+      <CloneProjectDialog
+        project={cloneSource}
+        onClose={() => setCloneSource(null)}
+        onCloned={loadProjects}
+      />
+    </>
   );
 }

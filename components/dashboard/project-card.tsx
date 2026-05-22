@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { FolderGit2, Clock, ArrowRight, MoreVertical, Trash, Edit2, Loader2 } from "lucide-react";
+import { FolderGit2, Clock, ArrowRight, MoreVertical, Trash, Edit2, Loader2, Copy } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,9 +22,10 @@ interface ProjectCardProps {
   project: Project;
   onDelete?: (projectId: string) => void;
   isDeleting?: boolean;
+  onClone?: (projectId: string) => void;
 }
 
-export function ProjectCard({ project, onDelete, isDeleting }: ProjectCardProps) {
+export function ProjectCard({ project, onDelete, isDeleting, onClone }: ProjectCardProps) {
   const menu = (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -38,6 +39,16 @@ export function ProjectCard({ project, onDelete, isDeleting }: ProjectCardProps)
         <DropdownMenuItem className="hover:bg-white/10 hover:text-white cursor-pointer">
           <Edit2 className="w-4 h-4 mr-2" />
           Rename
+        </DropdownMenuItem>
+        <DropdownMenuItem
+          className="hover:bg-white/10 hover:text-white cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (onClone) onClone(project.id);
+          }}
+        >
+          <Copy className="w-4 h-4 mr-2" />
+          Duplicate
         </DropdownMenuItem>
         <DropdownMenuItem
           className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"

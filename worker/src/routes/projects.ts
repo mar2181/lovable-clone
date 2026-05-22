@@ -89,6 +89,74 @@ projectsRouter.post("/:id/thumbnail", async (c) => {
   }
 });
 
+// Clone a project — seeds a brand-new project with the source's CURRENT files
+// as v1. Version history, chat history, project memory and integrations are
+// intentionally NOT copied: each clone is a clean, fully independent project.
+projectsRouter.post("/:id/clone", async (c) => {
+  const userId = c.get("userId");
+  const sourceId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  const r2 = c.env.R2_PROJECTS;
+
+  try {
+    // Verify the source project exists and is owned by the caller
+    const sourceStr = await kv.get(`user:${userId}:project:${sourceId}`);
+    if (!sourceStr) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+    const source = JSON.parse(sourceStr);
+
+    // Load the source's latest version files from R2
+    const latestVersionStr = await kv.get(`project:${sourceId}:latest_version`);
+    if (!latestVersionStr) {
+      return c.json({ error: "Source project has no versions to clone" }, 422);
+    }
+    const sourceObj = await r2.get(`${sourceId}/v${latestVersionStr}.json`);
+    if (!sourceObj) {
+      return c.json({ error: "Source version data missing" }, 422);
+    }
+    const sourceVersion = JSON.parse(await sourceObj.text());
+    const files = sourceVersion?.files;
+    if (!files || typeof files !== "object" || Object.keys(files).length === 0) {
+      return c.json({ error: "Source project has no files to clone" }, 422);
+    }
+
+    // Build the new project
+    const body = await c.req.json().catch(() => ({}));
+    const requestedName = typeof body?.name === "string" ? body.name.trim() : "";
+    const newProjectId = nanoid(10);
+    const now = new Date().toISOString();
+
+    const newProject = {
+      id: newProjectId,
+      userId,
+      name: requestedName || `Copy of ${source.name}`,
+      description: source.description || "",
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const newVersionData: Record<string, unknown> = {
+      version: 1,
+      createdAt: now,
+      prompt: `Cloned from ${source.name}`,
+      files,
+    };
+    if (sourceVersion?.dependencies) {
+      newVersionData.dependencies = sourceVersion.dependencies;
+    }
+
+    await r2.put(`${newProjectId}/v1.json`, JSON.stringify(newVersionData));
+    await kv.put(`project:${newProjectId}:latest_version`, "1");
+    await kv.put(`user:${userId}:project:${newProjectId}`, JSON.stringify(newProject));
+
+    return c.json({ project: newProject, version: 1 }, 201);
+  } catch (error) {
+    console.error("Clone project error:", error);
+    return c.json({ error: "Failed to clone project" }, 500);
+  }
+});
+
 // Create new project
 projectsRouter.post("/", async (c) => {
   const userId = c.get("userId");
