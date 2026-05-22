@@ -41,14 +41,19 @@ export function HistoryPanel({ projectId, onRestore }: { projectId: string; onRe
     setRestoringVersion(versionNum);
     try {
       const token = await getToken();
-      const res = await fetch(`${WORKER_URL}/api/versions/${projectId}/${versionNum}`, {
+      const res = await fetch(`${WORKER_URL}/api/versions/${projectId}/${versionNum}/restore`, {
+        method: "POST",
         headers: { Authorization: `Bearer ${token}` }
       });
       if (res.ok) {
         const data = await res.json();
-        if (data.version && data.version.files) {
-          onRestore(data.version.files, data.version.dependencies || {});
+        if (data.files) {
+          onRestore(data.files, data.dependencies || {});
         }
+        // Refresh the timeline so the new "Restored from version N" entry shows
+        await fetchVersions();
+      } else {
+        console.error("Restore failed:", res.status, await res.text());
       }
     } catch (err) {
       console.error("Failed to restore version:", err);

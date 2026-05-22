@@ -130,7 +130,11 @@ export function WorkspacePanel({ projectId, files, dependencies, onFileChange, o
           <TabsContent value="history" className="h-full m-0 absolute inset-0">
             <HistoryPanel
               projectId={projectId}
-              onRestore={(f, d) => onRestore && onRestore(f, d)}
+              onRestore={(f, d) => {
+                if (onRestore) onRestore(f, d);
+                // Jump to the preview so the restored version is visible
+                setActiveTab("preview");
+              }}
             />
           </TabsContent>
         </div>

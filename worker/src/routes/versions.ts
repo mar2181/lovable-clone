@@ -139,8 +139,8 @@ versionsRouter.get("/:projectId", async (c) => {
     const history = [];
 
     // In production, we'd store version metadata in KV to avoid N+1 R2 reads.
-    // For this clone, we'll read up to 20 past versions to build the timeline
-    const maxVersions = Math.min(latestVersion, 20);
+    // Read up to 50 past versions to build the timeline.
+    const maxVersions = Math.min(latestVersion, 50);
     const promises = [];
 
     for (let i = latestVersion; i > latestVersion - maxVersions && i > 0; i--) {
@@ -165,6 +165,70 @@ versionsRouter.get("/:projectId", async (c) => {
   } catch (error) {
     console.error("Failed to list history:", error);
     return c.json({ error: "Failed to fetch version history" }, 500);
+  }
+});
+
+// Restore a previous version.
+//
+// Append-only: this copies version N's files into a brand-new version and
+// points the project at it, so the rollback survives a reload and the full
+// history is preserved (nothing is overwritten or deleted).
+versionsRouter.post("/:projectId/:versionNum/restore", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("projectId");
+  const versionNum = c.req.param("versionNum");
+
+  const kv = c.env.KV_METADATA;
+  const r2 = c.env.R2_PROJECTS;
+
+  if (!/^\d+$/.test(versionNum)) {
+    return c.json({ error: "Version number must be a positive integer" }, 400);
+  }
+
+  try {
+    const projectStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projectStr) return c.json({ error: "Project not found" }, 404);
+
+    // Load the version being restored
+    const sourceObj = await r2.get(`${projectId}/v${versionNum}.json`);
+    if (!sourceObj) return c.json({ error: "Version not found" }, 404);
+
+    const sourceData = (await sourceObj.json()) as any;
+    const files = sourceData?.files;
+    if (!files || typeof files !== "object" || Object.keys(files).length === 0) {
+      return c.json({ error: "Version has no files to restore" }, 422);
+    }
+
+    // Append a new version carrying the restored files
+    const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
+    const newVersionNum = parseInt(latestVersionStr || "1") + 1;
+
+    const newVersionData: Record<string, unknown> = {
+      version: newVersionNum,
+      createdAt: new Date().toISOString(),
+      prompt: `Restored from version ${versionNum}`,
+      files,
+    };
+    if (sourceData?.dependencies) {
+      newVersionData.dependencies = sourceData.dependencies;
+    }
+
+    await r2.put(`${projectId}/v${newVersionNum}.json`, JSON.stringify(newVersionData));
+    await kv.put(`project:${projectId}:latest_version`, newVersionNum.toString());
+
+    const project = JSON.parse(projectStr);
+    project.updatedAt = new Date().toISOString();
+    await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
+
+    return c.json({
+      success: true,
+      version: newVersionNum,
+      files,
+      dependencies: sourceData?.dependencies || {},
+    });
+  } catch (error) {
+    console.error("Failed to restore version:", error);
+    return c.json({ error: "Failed to restore version" }, 500);
   }
 });
 
