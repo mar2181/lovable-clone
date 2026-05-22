@@ -13,6 +13,7 @@ interface Project {
   description?: string;
   createdAt: string;
   updatedAt: string;
+  thumbnailUrl?: string;
 }
 
 export function ProjectList() {

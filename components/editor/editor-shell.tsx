@@ -52,6 +52,26 @@ export function EditorShell({ projectId }: { projectId: string }) {
     loadProject();
   }, [projectId, getToken]);
 
+  // Refresh the Dashboard thumbnail (hero image) once when the editor opens.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token || cancelled) return;
+        await fetch(`${WORKER_URL}/api/projects/${projectId}/thumbnail`, {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}` },
+        });
+      } catch {
+        // Non-critical — thumbnail just won't refresh this visit.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, getToken]);
+
   useEffect(() => {
     async function probeSupabase() {
       try {

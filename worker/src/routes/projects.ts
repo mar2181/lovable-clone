@@ -3,6 +3,7 @@ import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
 import { nanoid } from "nanoid";
 import { defaultFiles } from "../ai/default-project";
+import { extractHeroImageUrl } from "../services/thumbnail";
 
 const projectsRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -45,6 +46,46 @@ projectsRouter.get("/:id", async (c) => {
     return c.json({ project: JSON.parse(projectStr) });
   } catch (error) {
     return c.json({ error: "Failed to fetch project" }, 500);
+  }
+});
+
+// Refresh the project's thumbnail (hero image) — called when the editor opens
+projectsRouter.post("/:id/thumbnail", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  const r2 = c.env.R2_PROJECTS;
+
+  try {
+    const projectStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projectStr) {
+      return c.json({ error: "Project not found" }, 404);
+    }
+    const project = JSON.parse(projectStr);
+
+    // Load the latest file version from R2
+    const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
+    let files: Record<string, string> = {};
+    if (latestVersionStr) {
+      const latestData = await r2.get(`${projectId}/v${latestVersionStr}.json`);
+      if (latestData) {
+        const versionData = JSON.parse(await latestData.text());
+        files = versionData.files || {};
+      }
+    }
+
+    const heroUrl = extractHeroImageUrl(files);
+
+    if (heroUrl && heroUrl !== project.thumbnailUrl) {
+      project.thumbnailUrl = heroUrl;
+      project.thumbnailUpdatedAt = new Date().toISOString();
+      await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
+    }
+
+    return c.json({ thumbnailUrl: heroUrl || project.thumbnailUrl || null });
+  } catch (error) {
+    console.error("Thumbnail refresh error:", error);
+    return c.json({ error: "Failed to refresh thumbnail" }, 500);
   }
 });
 
