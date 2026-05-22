@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Loader2, Eye, MessageSquare, Hammer } from "lucide-react";
+import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps } from "@/components/editor/chat-message";
@@ -72,6 +72,11 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   // (so the finally block doesn't overwrite a real done/error message).
   const finalizedRef = useRef(false);
   const doneReceivedRef = useRef(false);
+  // Abort handle for the in-flight generation + why it was stopped. Lets the
+  // user (or the stall watchdog) break out of a hung stream instead of
+  // leaving isGenerating stuck true forever.
+  const abortRef = useRef<AbortController | null>(null);
+  const stopReasonRef = useRef<"manual" | "timeout" | null>(null);
 
   // Live ref to current contextFiles, so the chunk handler always sees the
   // freshest file map even though it captures contextFiles in a closure.
@@ -91,6 +96,12 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       }
       return next;
     });
+  }, []);
+
+  // Abort an in-flight generation (user pressed Stop, or the watchdog fired).
+  const handleStop = useCallback(() => {
+    stopReasonRef.current = "manual";
+    abortRef.current?.abort();
   }, []);
 
   useEffect(() => {
@@ -238,8 +249,25 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     rawAssistantResponseRef.current = "";
     doneReceivedRef.current = false;
     finalizedRef.current = false;
+    stopReasonRef.current = null;
     // Snapshot the pre-generation file set so we can summarize the diff at done.
     filesAtSubmitRef.current = { ...contextFilesRef.current };
+
+    // Abort controller + stall watchdog. fetchEventSource silently parks a
+    // dropped connection (hidden tab, dead worker) without ever settling its
+    // promise — that would leave isGenerating stuck true and freeze the whole
+    // panel. The watchdog force-aborts after total silence so the finally
+    // block can always recover.
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => {
+        stopReasonRef.current = "timeout";
+        controller.abort();
+      }, 180_000);
+    };
 
     try {
       const token = await getToken();
@@ -253,8 +281,14 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         { role: "assistant", content: initialAssistantContent },
       ]);
 
+      armWatchdog();
       await fetchEventSource(`${WORKER_URL}/api/chat/${projectId}`, {
         method: "POST",
+        signal: controller.signal,
+        // Keep streaming when the tab is backgrounded. Without this,
+        // fetch-event-source drops the connection the moment the tab loses
+        // focus (e.g. while checking the preview) and never recovers.
+        openWhenHidden: true,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`
@@ -267,9 +301,11 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           mode: currentMode,
         }),
         async onopen() {
+          armWatchdog();
           setStatusMessage(currentMode === "ask" ? "Answering…" : "AI is generating code…");
         },
         onmessage(ev) {
+          armWatchdog();
           if (ev.event === "message") {
             let data: any;
             try { data = JSON.parse(ev.data); }
@@ -366,6 +402,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         },
         onclose() {
           // Server closed the connection — normal after "done". Do NOT retry.
+          if (watchdog) clearTimeout(watchdog);
         },
         onerror(err) {
           console.error("EventSource connection error:", err);
@@ -376,10 +413,32 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       });
     } catch (error) {
       console.error("Chat error:", error);
-      const msg = error instanceof Error ? error.message : "could not reach the worker";
-      finalizeAssistantMessage(`Generation failed: ${msg}`);
-      setStatusMessage("Error");
+      if (stopReasonRef.current === "manual") {
+        finalizeAssistantMessage("Stopped.");
+        setStatusMessage("Stopped");
+      } else if (stopReasonRef.current === "timeout") {
+        finalizeAssistantMessage(
+          "Generation timed out — the AI stopped responding. Please try again."
+        );
+        setStatusMessage("Timed out");
+      } else {
+        const msg = error instanceof Error ? error.message : "could not reach the worker";
+        finalizeAssistantMessage(`Generation failed: ${msg}`);
+        setStatusMessage("Error");
+      }
     } finally {
+      if (watchdog) clearTimeout(watchdog);
+      abortRef.current = null;
+      // If the user stopped or the watchdog timed out, finalize cleanly.
+      // Covers the case where the abort resolves the stream instead of
+      // throwing — without this, isGenerating could stay stuck.
+      if (!finalizedRef.current && stopReasonRef.current) {
+        finalizeAssistantMessage(
+          stopReasonRef.current === "manual"
+            ? "Stopped."
+            : "Generation timed out — the AI stopped responding. Please try again."
+        );
+      }
       // Fallback: if the "done" event was dropped by fetchEventSource (it
       // sometimes is), reconstruct the result from the accumulated raw text.
       if (!doneReceivedRef.current && !finalizedRef.current && rawAssistantResponseRef.current) {
@@ -533,20 +592,29 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
                 Ask
               </Button>
-              <Button
-                type="submit"
-                size="sm"
-                disabled={!prompt.trim() || isGenerating}
-                className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                title="Modify the code (Enter)"
-              >
-                {isGenerating ? (
-                  <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
-                ) : (
+              {isGenerating ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={handleStop}
+                  className="h-8 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700"
+                  title="Stop the current generation"
+                >
+                  <Square className="w-3.5 h-3.5 mr-1.5 fill-current" />
+                  Stop
+                </Button>
+              ) : (
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!prompt.trim()}
+                  className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                  title="Modify the code (Enter)"
+                >
                   <Hammer className="w-3.5 h-3.5 mr-1.5" />
-                )}
-                Build
-              </Button>
+                  Build
+                </Button>
+              )}
             </div>
           </div>
         </form>

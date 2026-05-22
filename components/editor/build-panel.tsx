@@ -48,6 +48,9 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
 
   const filesRef = useRef(contextFiles);
   filesRef.current = contextFiles;
+  // Abort handle so a hung/dropped build stream can't leave isBuilding stuck
+  // true — which would lock this dialog open with no way to close it.
+  const abortRef = useRef<AbortController | null>(null);
 
   const handleBuild = async () => {
     if (isBuilding) return;
@@ -66,6 +69,16 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
     setTotalPages(0);
     setCompletedPages(0);
     setStreamOutput("");
+
+    // Abort controller + stall watchdog so a dropped/hung stream can't leave
+    // isBuilding stuck true (which locks this dialog open with no way out).
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let watchdog: ReturnType<typeof setTimeout> | null = null;
+    const armWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog);
+      watchdog = setTimeout(() => controller.abort(), 180_000);
+    };
 
     try {
       const token = await getToken();
@@ -87,17 +100,24 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
 
       body.existingFiles = filesRef.current;
 
+      armWatchdog();
       await fetchEventSource(`${WORKER_URL}/api/build/${projectId}`, {
         method: "POST",
+        signal: controller.signal,
+        // Keep streaming when the tab is backgrounded — otherwise the build
+        // connection is dropped the moment the tab loses focus.
+        openWhenHidden: true,
         headers: {
           "Content-Type": "application/json",
           Authorization: `Bearer ${token}`,
         },
         body: JSON.stringify(body),
         async onopen() {
+          armWatchdog();
           setBuildStatus("Connected. Waiting for AI...");
         },
         onmessage(ev) {
+          armWatchdog();
           if (ev.event !== "message") return;
 
           try {
@@ -171,6 +191,7 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
           }
         },
         onclose() {
+          if (watchdog) clearTimeout(watchdog);
           setIsBuilding(false);
         },
         onerror(err) {
@@ -181,11 +202,21 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
       });
     } catch (error) {
       console.error("Build error:", error);
-      setBuildStatus("Build failed — check console");
+      setBuildStatus(
+        controller.signal.aborted
+          ? "Build stopped."
+          : "Build failed — check console"
+      );
     } finally {
+      if (watchdog) clearTimeout(watchdog);
+      abortRef.current = null;
       setIsBuilding(false);
       setTimeout(() => setStreamOutput(""), 5000);
     }
+  };
+
+  const handleStopBuild = () => {
+    abortRef.current?.abort();
   };
 
   const pageList = Object.values(pages);
@@ -344,6 +375,16 @@ export function BuildPanel({ projectId, contextFiles, onUpdateFiles }: BuildPane
                   : "Generates all pages in batches via AI"}
               </span>
               <div className="flex gap-2">
+                {isBuilding && (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={handleStopBuild}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    Stop
+                  </Button>
+                )}
                 {!hasStarted && (
                   <Button
                     variant="ghost"
