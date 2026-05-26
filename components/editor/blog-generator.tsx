@@ -230,7 +230,7 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
         <DialogContent className="sm:max-w-2xl max-h-[85vh] overflow-y-auto bg-zinc-900 border-zinc-800 text-white">
           <DialogHeader>
             <DialogTitle className="text-xl flex items-center gap-2">
-              <Wand2 className="w-5 h-5 text-purple-400" />
+              <Wand2 className="w-5 h-5 text-sky-400" />
               Blog Batch Generator
             </DialogTitle>
           </DialogHeader>
@@ -246,7 +246,7 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
                     onClick={() => handleLoadPreset(key)}
                     className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all ${
                       presetKey === key
-                        ? "bg-purple-600 text-white"
+                        ? "bg-sky-600 text-white"
                         : "bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white"
                     }`}
                   >
@@ -278,7 +278,7 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
                   size="icon"
                   onClick={handleAddTopic}
                   disabled={!newTitle.trim()}
-                  className="shrink-0 text-purple-400 hover:text-purple-300"
+                  className="shrink-0 text-sky-400 hover:text-sky-300"
                 >
                   <Plus className="w-4 h-4" />
                 </Button>
@@ -334,9 +334,9 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
 
             {/* Progress */}
             {generating && progress && (
-              <div className="p-4 rounded-xl bg-purple-500/10 border border-purple-500/20">
+              <div className="p-4 rounded-xl bg-sky-500/10 border border-sky-500/20">
                 <div className="flex items-center gap-3">
-                  <Loader2 className="w-5 h-5 animate-spin text-purple-400" />
+                  <Loader2 className="w-5 h-5 animate-spin text-sky-400" />
                   <div>
                     <p className="text-sm font-medium text-white">
                       Generating {progress.current}/{progress.total}
@@ -346,7 +346,7 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
                 </div>
                 <div className="mt-3 h-1.5 bg-zinc-800 rounded-full overflow-hidden">
                   <div
-                    className="h-full bg-purple-500 transition-all duration-500"
+                    className="h-full bg-sky-500 transition-all duration-500"
                     style={{ width: `${(progress.current / progress.total) * 100}%` }}
                   />
                 </div>
@@ -375,7 +375,7 @@ export function BlogGenerator({ projectId, contextFiles, onUpdateFiles }: BlogGe
             <Button
               onClick={handleGenerate}
               disabled={generating || topics.length === 0}
-              className="w-full bg-purple-600 hover:bg-purple-500 text-white"
+              className="w-full bg-sky-600 hover:bg-sky-500 text-white"
             >
               {generating ? (
                 <>

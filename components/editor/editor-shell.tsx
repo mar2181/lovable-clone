@@ -190,7 +190,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
         {/* Drag Handle */}
         <div
           onMouseDown={handleMouseDown}
-          className="w-[6px] shrink-0 cursor-col-resize bg-white/10 hover:bg-purple-500/60 active:bg-purple-500 transition-colors relative group"
+          className="w-[6px] shrink-0 cursor-col-resize bg-white/10 hover:bg-sky-500/60 active:bg-sky-500 transition-colors relative group"
         >
           <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-1 h-8 rounded-full bg-white/30 group-hover:bg-white/60 transition-colors" />
         </div>

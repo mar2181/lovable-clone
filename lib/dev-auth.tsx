@@ -1,6 +1,6 @@
 "use client";
 
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import Link from "next/link";
 import {
   ClerkProvider as RealClerkProvider,
@@ -25,14 +25,16 @@ function RealProvider({ children }: { children: ReactNode }) {
 
 export const ClerkProvider = DEV_BYPASS ? DevProvider : RealProvider;
 
+const devAuthReturn = {
+  getToken: async () => DEV_TOKEN,
+  isLoaded: true,
+  isSignedIn: true,
+  userId: DEV_TOKEN,
+  sessionId: "dev-session",
+} as const;
+
 function useDevAuth() {
-  return {
-    getToken: async () => DEV_TOKEN,
-    isLoaded: true,
-    isSignedIn: true,
-    userId: DEV_TOKEN,
-    sessionId: "dev-session",
-  };
+  return useMemo(() => devAuthReturn, []);
 }
 
 function useRealAuth() {
@@ -41,20 +43,22 @@ function useRealAuth() {
 
 export const useAuth = DEV_BYPASS ? useDevAuth : useRealAuth;
 
-function useDevUser() {
-  return {
-    isLoaded: true,
-    isSignedIn: true,
-    user: {
-      id: DEV_TOKEN,
-      fullName: DEV_NAME,
-      firstName: "Local",
-      lastName: "Dev",
-      primaryEmailAddress: {
-        emailAddress: DEV_EMAIL,
-      },
+const devUserReturn = {
+  isLoaded: true,
+  isSignedIn: true,
+  user: {
+    id: DEV_TOKEN,
+    fullName: DEV_NAME,
+    firstName: "Local",
+    lastName: "Dev",
+    primaryEmailAddress: {
+      emailAddress: DEV_EMAIL,
     },
-  };
+  },
+} as const;
+
+function useDevUser() {
+  return useMemo(() => devUserReturn, []);
 }
 
 function useRealUser() {

@@ -77,7 +77,7 @@ export function ProjectMemory({ projectId, isOpen, onClose }: ProjectMemoryProps
         {/* Header */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-white/10">
           <div className="flex items-center gap-2">
-            <Brain className="w-5 h-5 text-purple-400" />
+            <Brain className="w-5 h-5 text-sky-400" />
             <h2 className="text-base font-semibold text-white">Project Memory</h2>
           </div>
           <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8 text-zinc-400 hover:text-white">
@@ -103,14 +103,14 @@ export function ProjectMemory({ projectId, isOpen, onClose }: ProjectMemoryProps
                 value={memory}
                 onChange={(e) => setMemory(e.target.value)}
                 placeholder="Example: This is a locksmith business website for 956 Locksmith in South Texas. Dark slate-900 theme with amber/gold accents. Serves McAllen, Edinburg, Mission, Pharr area. Services include residential, commercial, automotive locksmith and emergency lockouts."
-                className="w-full bg-zinc-800/50 border border-white/10 rounded-lg p-3 text-sm text-white placeholder:text-zinc-600 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 resize-none min-h-[160px] focus-visible:outline-none"
+                className="w-full bg-zinc-800/50 border border-white/10 rounded-lg p-3 text-sm text-white placeholder:text-zinc-600 focus:ring-1 focus:ring-sky-500 focus:border-sky-500 resize-none min-h-[160px] focus-visible:outline-none"
               />
               <div className="flex items-center gap-2 mt-3">
                 <Button
                   size="sm"
                   onClick={handleSave}
                   disabled={isSaving}
-                  className="bg-purple-600 hover:bg-purple-700 text-white"
+                  className="bg-sky-600 hover:bg-sky-700 text-white"
                 >
                   {isSaving ? (
                     <Loader2 className="w-3.5 h-3.5 mr-2 animate-spin" />
@@ -147,7 +147,7 @@ export function ProjectMemory({ projectId, isOpen, onClose }: ProjectMemoryProps
                       className={`text-xs rounded-lg px-3 py-2 ${
                         entry.role === "user"
                           ? "bg-zinc-800/50 border border-white/5 text-zinc-300"
-                          : "bg-purple-900/20 border border-purple-500/10 text-purple-300"
+                          : "bg-sky-900/20 border border-sky-500/10 text-sky-300"
                       }`}
                     >
                       <span className="font-medium text-zinc-500 mr-2">

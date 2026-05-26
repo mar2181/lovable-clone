@@ -14,7 +14,7 @@ function GitHubButton({ projectId }: { projectId: string }) {
   const { getToken } = useAuth();
 
   const handlePush = async () => {
-    const repoName = prompt("Enter GitHub repository name:", `lovable-project-${projectId.slice(0, 8)}`);
+    const repoName = prompt("Enter GitHub repository name:", `hs-project-${projectId.slice(0, 8)}`);
     if (!repoName) return;
 
     setState("pushing");

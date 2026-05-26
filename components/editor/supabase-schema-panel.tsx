@@ -94,13 +94,13 @@ export function SupabaseSchemaPanel({ projectId, open, onClose }: SupabaseSchema
         {/* Tabs */}
         <div className="flex border-b border-white/5">
           <button
-            className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === "schema" ? "text-purple-400 border-b-2 border-purple-500" : "text-zinc-500 hover:text-zinc-300"}`}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === "schema" ? "text-sky-400 border-b-2 border-sky-500" : "text-zinc-500 hover:text-zinc-300"}`}
             onClick={() => setActiveTab("schema")}
           >
             Tables
           </button>
           <button
-            className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === "history" ? "text-purple-400 border-b-2 border-purple-500" : "text-zinc-500 hover:text-zinc-300"}`}
+            className={`flex-1 py-2 text-xs font-medium transition-colors ${activeTab === "history" ? "text-sky-400 border-b-2 border-sky-500" : "text-zinc-500 hover:text-zinc-300"}`}
             onClick={() => setActiveTab("history")}
           >
             Migrations
@@ -151,8 +151,8 @@ export function SupabaseSchemaPanel({ projectId, open, onClose }: SupabaseSchema
                         <div className="mt-2 pt-2 border-t border-white/5">
                           <p className="text-xs text-zinc-500 mb-1">Policies:</p>
                           {t.policies.map((p, i) => (
-                            <div key={i} className="text-xs text-zinc-400 pl-2 border-l-2 border-purple-500/50 mb-1">
-                              <span className="font-mono text-purple-400">{p.name}</span>
+                            <div key={i} className="text-xs text-zinc-400 pl-2 border-l-2 border-sky-500/50 mb-1">
+                              <span className="font-mono text-sky-400">{p.name}</span>
                               <span className="text-zinc-600"> ({p.command})</span>
                               {p.roles.length > 0 && (
                                 <span className="text-zinc-600"> for [{p.roles.join(", ")}]</span>

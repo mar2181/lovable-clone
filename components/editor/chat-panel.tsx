@@ -485,7 +485,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
               <Bot className="w-5 h-5 text-primary" />
             </div>
             <div className="space-y-1 pt-1">
-              <p className="text-sm font-medium text-white">Lovable AI</p>
+              <p className="text-sm font-medium text-white">HS Solutions AI</p>
               <div className="text-sm text-zinc-300">
                 <p>Hello! I&apos;m ready to help you build. What would you like to create?</p>
                 <p className="mt-2 text-zinc-500">Try saying: &ldquo;Create a modern landing page for a SaaS startup with a dark theme&rdquo;</p>

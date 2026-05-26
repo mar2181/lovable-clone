@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import { ClerkProvider } from "@/lib/dev-auth";
 import { PetConcierge } from "@/components/pet-concierge";
 import "./globals.css";
@@ -12,6 +12,13 @@ const geistSans = Geist({
 const geistMono = Geist_Mono({
   variable: "--font-geist-mono",
   subsets: ["latin"],
+});
+
+const instrumentSerif = Instrument_Serif({
+  variable: "--font-instrument-serif",
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
 });
 
 export const metadata: Metadata = {
@@ -27,7 +34,7 @@ export default function RootLayout({
   return (
     <ClerkProvider>
       <html lang="en" className="dark" suppressHydrationWarning>
-        <body className={`${geistSans.variable} ${geistMono.variable} min-h-screen bg-background font-sans antialiased flex flex-col`}>
+        <body className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} min-h-screen bg-background font-sans antialiased flex flex-col`}>
           {children}
           <PetConcierge />
         </body>

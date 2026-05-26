@@ -143,7 +143,7 @@ export function SupabaseModal({ projectId, open, onClose, onLinked }: SupabaseMo
             href="https://app.supabase.com"
             target="_blank"
             rel="noopener noreferrer"
-            className="text-xs text-zinc-500 hover:text-purple-400 flex items-center gap-1 transition-colors"
+            className="text-xs text-zinc-500 hover:text-sky-400 flex items-center gap-1 transition-colors"
           >
             Open Supabase Dashboard <ExternalLink className="w-3 h-3" />
           </a>

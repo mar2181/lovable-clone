@@ -191,7 +191,7 @@ export function TemplatePicker() {
     <Dialog open={open} onOpenChange={(v) => (v ? setOpen(true) : resetAndClose())}>
         <Button
           variant="outline"
-          className="border-dashed border-2 border-zinc-700 hover:border-purple-500/50 hover:bg-purple-500/5 text-zinc-400 hover:text-white h-auto py-4 px-6"
+          className="border-dashed border-2 border-zinc-700 hover:border-sky-500/50 hover:bg-sky-500/5 text-zinc-400 hover:text-white h-auto py-4 px-6"
           onClick={() => setOpen(true)}
         >
           <LayoutTemplate className="w-4 h-4 mr-2" />
@@ -204,14 +204,14 @@ export function TemplatePicker() {
           <>
             <DialogHeader>
               <DialogTitle className="text-xl flex items-center gap-2">
-                <LayoutTemplate className="w-5 h-5 text-purple-400" />
+                <LayoutTemplate className="w-5 h-5 text-sky-400" />
                 Choose a Template
               </DialogTitle>
             </DialogHeader>
 
             {loading ? (
               <div className="flex items-center justify-center py-12">
-                <Loader2 className="w-8 h-8 animate-spin text-purple-400" />
+                <Loader2 className="w-8 h-8 animate-spin text-sky-400" />
               </div>
             ) : (
               <div className="grid grid-cols-2 gap-3 mt-4">
@@ -219,10 +219,10 @@ export function TemplatePicker() {
                   <button
                     key={t.id}
                     onClick={() => handleSelectTemplate(t)}
-                    className="p-4 rounded-xl border border-zinc-700 hover:border-purple-500/50 hover:bg-purple-500/5 text-left transition-all group"
+                    className="p-4 rounded-xl border border-zinc-700 hover:border-sky-500/50 hover:bg-sky-500/5 text-left transition-all group"
                   >
                     <div className="text-3xl mb-2">{ICON_MAP[t.icon] || "📋"}</div>
-                    <h3 className="font-semibold text-white group-hover:text-purple-300 transition-colors">
+                    <h3 className="font-semibold text-white group-hover:text-sky-300 transition-colors">
                       {t.name}
                     </h3>
                     <p className="text-xs text-zinc-500 mt-1">{t.description}</p>
@@ -327,7 +327,7 @@ export function TemplatePicker() {
                     variant="ghost"
                     size="sm"
                     onClick={handleAddService}
-                    className="text-xs text-purple-400 hover:text-purple-300"
+                    className="text-xs text-sky-400 hover:text-sky-300"
                   >
                     <Plus className="w-3 h-3 mr-1" />
                     Add Service
@@ -371,7 +371,7 @@ export function TemplatePicker() {
                 <Button
                   onClick={() => setStep("colors")}
                   disabled={!businessName.trim()}
-                  className="bg-purple-600 hover:bg-purple-500 text-white"
+                  className="bg-sky-600 hover:bg-sky-500 text-white"
                 >
                   Next: Colors
                   <ArrowRight className="w-4 h-4 ml-1" />
@@ -386,7 +386,7 @@ export function TemplatePicker() {
           <>
             <DialogHeader>
               <DialogTitle className="text-xl flex items-center gap-2">
-                <Palette className="w-5 h-5 text-purple-400" />
+                <Palette className="w-5 h-5 text-sky-400" />
                 Choose Your Colors
               </DialogTitle>
             </DialogHeader>
@@ -399,7 +399,7 @@ export function TemplatePicker() {
                     onClick={() => setSelectedColorScheme(i)}
                     className={`flex items-center gap-4 p-4 rounded-xl border transition-all text-left ${
                       selectedColorScheme === i
-                        ? "border-purple-500 bg-purple-500/10"
+                        ? "border-sky-500 bg-sky-500/10"
                         : "border-zinc-700 hover:border-zinc-600"
                     }`}
                   >
@@ -422,7 +422,7 @@ export function TemplatePicker() {
                       <p className="text-xs text-zinc-500">{scheme.primary}</p>
                     </div>
                     {selectedColorScheme === i && (
-                      <Check className="w-5 h-5 text-purple-400" />
+                      <Check className="w-5 h-5 text-sky-400" />
                     )}
                   </button>
                 ))}
@@ -472,7 +472,7 @@ export function TemplatePicker() {
                 <Button
                   onClick={handleGenerate}
                   disabled={generating}
-                  className="bg-purple-600 hover:bg-purple-500 text-white px-6"
+                  className="bg-sky-600 hover:bg-sky-500 text-white px-6"
                 >
                   {generating ? (
                     <>

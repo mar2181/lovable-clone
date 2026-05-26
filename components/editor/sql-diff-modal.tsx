@@ -109,7 +109,7 @@ export function SqlDiffModal({ projectId, migration, open, onApplied, onSkip }: 
         {/* SQL editor */}
         <div className="flex-1 overflow-y-auto px-6 py-4">
           <textarea
-            className="w-full min-h-[200px] bg-zinc-950 border border-white/10 rounded-lg p-4 text-sm font-mono text-zinc-300 focus:outline-none focus:border-purple-500/50 resize-y"
+            className="w-full min-h-[200px] bg-zinc-950 border border-white/10 rounded-lg p-4 text-sm font-mono text-zinc-300 focus:outline-none focus:border-sky-500/50 resize-y"
             value={sql}
             onChange={(e) => setSql(e.target.value)}
             spellCheck={false}

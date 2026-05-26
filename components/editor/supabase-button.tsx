@@ -55,7 +55,7 @@ export function SupabaseButton({ projectId, onOpenModal, onOpenMenu, onLinkUpdat
       <Button
         variant="outline"
         size="sm"
-        className="h-8 bg-white/5 border-purple-500/30 hover:border-purple-500/60"
+        className="h-8 bg-white/5 border-sky-500/30 hover:border-sky-500/60"
         onClick={onOpenMenu}
       >
         <CheckCircle2 className="w-3.5 h-3.5 mr-2 text-green-400" />
@@ -69,7 +69,7 @@ export function SupabaseButton({ projectId, onOpenModal, onOpenMenu, onLinkUpdat
     <Button
       variant="outline"
       size="sm"
-      className="h-8 bg-white/5 border-white/10 hover:border-purple-500/50 hover:text-purple-400 transition-colors"
+      className="h-8 bg-white/5 border-white/10 hover:border-sky-500/50 hover:text-sky-400 transition-colors"
       onClick={onOpenModal}
     >
       <Database className="w-3.5 h-3.5 mr-2" />
