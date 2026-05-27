@@ -7,12 +7,14 @@ import {
   ITERATION_PROMPT,
   ASK_PROMPT,
   RESEARCH_PROMPT,
+  CINEMATIC_PROMPT,
   TASTE_RULES,
   STRATEGY_SOURCE_OF_TRUTH,
 } from "../ai/system-prompt";
 import { parseStreamToJSON } from "../ai/file-parser";
 import { hasEnoughCredits, deductCredit } from "../services/credits";
 import { replaceImagePlaceholders } from "../services/image-gen";
+import { replaceVideoPlaceholders } from "../services/video-gen";
 import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
 import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
@@ -63,11 +65,19 @@ const ASK_TOOL_FALLBACK_MODEL = "openai/gpt-4.1";
 // dropdown pick. (Kimi K2.6 in particular cannot drive this workflow.)
 const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-4";
 
+// Cinematic mode produces a multi-file magazine page with strict JSON output.
+// Sonnet handles the long structured envelope reliably; Kimi K2.6 truncates
+// mid-file under the cinematic prompt's length. Force Sonnet here too.
+const CINEMATIC_FORCED_MODEL = "anthropic/claude-sonnet-4";
+
 // Step cap. Build/Ask use a tight cap so a runaway prompt can't drain Tavily
 // or Firecrawl credit. Research mode legitimately needs many more steps —
 // the workflow does ~8 web_search + ~12 web_scrape + reasoning steps.
+// Cinematic mode is mostly drafting + a couple of tool calls if the user
+// referenced a URL; 8 is plenty.
 const STEP_CAP_DEFAULT = 5;
 const STEP_CAP_RESEARCH = 30;
+const STEP_CAP_CINEMATIC = 8;
 
 const chatRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -129,13 +139,23 @@ chatRouter.post("/:projectId", async (c) => {
       ? imagesBase64.slice(0, 10) // cap at 10
       : imageBase64 ? [imageBase64] : [];
     // Mode discriminator on the chat request.
-    //   "ask"      — conversational, no file writes, prose response. Tools enabled.
-    //   "build"    — default. Generates files. JSON envelope. Tools optional (model-gated).
-    //   "research" — runs the Outlier Engine workflow. Tools always on, step cap raised,
-    //                model forced to Claude Sonnet. Produces /src/pages/Strategy.tsx +
-    //                a strategy_digest field that gets stashed to KV.
-    const mode: "ask" | "build" | "research" =
-      rawMode === "ask" ? "ask" : rawMode === "research" ? "research" : "build";
+    //   "ask"        — conversational, no file writes, prose response. Tools enabled.
+    //   "build"      — default. Generates files. JSON envelope. Tools optional (model-gated).
+    //   "research"   — runs the Outlier Engine workflow. Tools always on, step cap raised,
+    //                  model forced to Claude Sonnet. Produces /src/pages/Strategy.tsx +
+    //                  a strategy_digest field that gets stashed to KV.
+    //   "cinematic"  — runs the Cinematic Magazine Engine. Produces a dark-magazine
+    //                  blog/landing/homepage with FAL_VIDEO hero + FAL_IMAGE stills.
+    //                  Model forced to Sonnet, fal Kling t2v render runs server-side
+    //                  after JSON parse.
+    const mode: "ask" | "build" | "research" | "cinematic" =
+      rawMode === "ask"
+        ? "ask"
+        : rawMode === "research"
+          ? "research"
+          : rawMode === "cinematic"
+            ? "cinematic"
+            : "build";
 
     // Validate inbound R2-hosted attachments. We only trust URLs on the configured
     // R2 public domain — anything else is dropped to prevent the model from being
@@ -226,19 +246,31 @@ chatRouter.post("/:projectId", async (c) => {
       }
     }
 
+    // Cinematic mode forces Sonnet too — the cinematic system prompt is long,
+    // the JSON envelope is multi-file, and code-strong-but-no-tools models
+    // (Kimi K2.6) truncate mid-file. Sonnet is the only reliable choice today.
+    if (mode === "cinematic") {
+      if (effectiveModel !== CINEMATIC_FORCED_MODEL) {
+        console.log(`[Chat] Cinematic mode: forcing model "${effectiveModel}" → ${CINEMATIC_FORCED_MODEL}`);
+        effectiveModel = CINEMATIC_FORCED_MODEL;
+      }
+    }
+
     // Model ID comes from frontend (or auto-switched for vision/tools)
     const aiModel = openrouter(effectiveModel);
 
-    // 5. Pick the system prompt. ASK and RESEARCH short-circuit the
-    // SCAFFOLD/ITERATION selection — they each have a dedicated prompt.
+    // 5. Pick the system prompt. ASK, RESEARCH, and CINEMATIC short-circuit
+    // the SCAFFOLD/ITERATION selection — each has a dedicated prompt.
     const basePrompt =
       mode === "ask"
         ? ASK_PROMPT
         : mode === "research"
           ? RESEARCH_PROMPT
-          : isFirstPrompt
-            ? SCAFFOLD_PROMPT
-            : ITERATION_PROMPT;
+          : mode === "cinematic"
+            ? CINEMATIC_PROMPT
+            : isFirstPrompt
+              ? SCAFFOLD_PROMPT
+              : ITERATION_PROMPT;
     console.log(
       `[Chat] project=${projectId} requestMode=${mode} buildMode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"} taste=${tasteEnabled ? "on" : "off"} strategy=${strategyDigest ? "present" : "none"}`,
     );
@@ -261,8 +293,8 @@ chatRouter.post("/:projectId", async (c) => {
       ? `\nCURRENT PROJECT FILES (Do not modify unless requested by the user's prompt):\n${JSON.stringify(userFiles, null, 2)}\n`
       : "";
 
-    // The "Reply ONLY in valid JSON" trailer applies to BUILD mode only.
-    // In ASK mode the model must respond in prose — JSON envelopes are wrong.
+    // The "Reply ONLY in valid JSON" trailer applies to BUILD/RESEARCH/CINEMATIC.
+    // ASK is the only prose-response mode.
     const jsonTrailer =
       mode === "ask"
         ? ""
@@ -282,18 +314,22 @@ chatRouter.post("/:projectId", async (c) => {
         ? `\n# USER ATTACHMENTS — EMBED THESE EXACT URLS\n${buildAttachmentPromptBlock(attachmentPromptEntries)}\n`
         : "";
 
-    // Taste rules apply to BUILD mode only. ASK is conversational (no code) so
-    // the design-taste rules are noise there. RESEARCH already bakes its own
-    // workflow into its prompt and shouldn't be biased by taste rules — the
-    // researched data is the source of truth, not the taste defaults.
+    // Taste rules apply to code-producing modes that need design discipline:
+    // BUILD and CINEMATIC. ASK is conversational (no code). RESEARCH bakes its
+    // own workflow and shouldn't be biased by taste rules — the researched
+    // data is the source of truth, not the taste defaults.
     const tasteBlock =
-      mode === "build" && tasteEnabled ? `\n${TASTE_RULES}\n` : "";
+      (mode === "build" || mode === "cinematic") && tasteEnabled
+        ? `\n${TASTE_RULES}\n`
+        : "";
 
-    // Strategy source-of-truth: prepend the digest to BUILD prompts when a
-    // prior research run wrote one. Honors the digest on every subsequent edit
-    // without the user having to remind the pet.
+    // Strategy source-of-truth: prepend the digest to BUILD and CINEMATIC
+    // prompts when a prior research run wrote one. Honors the digest on every
+    // subsequent edit without the user having to remind the pet.
     const strategyBlock =
-      mode === "build" && strategyDigest ? `\n${STRATEGY_SOURCE_OF_TRUTH(strategyDigest)}\n` : "";
+      (mode === "build" || mode === "cinematic") && strategyDigest
+        ? `\n${STRATEGY_SOURCE_OF_TRUTH(strategyDigest)}\n`
+        : "";
 
     const fullSystemPrompt = `
       ${basePrompt}
@@ -319,15 +355,24 @@ chatRouter.post("/:projectId", async (c) => {
 
         // Tool gating:
         //   - ASK / RESEARCH always get tools (their system prompts depend on them).
+        //   - CINEMATIC gets tools too — Sonnet is forced and the model may
+        //     want to peek at a reference site if the user names one. The
+        //     prompt itself doesn't require tool use; this is opt-in.
         //   - BUILD gets tools only when the user's chosen model is in the
         //     tool-capable allowlist — picking a code-strong-but-no-tools model
         //     (e.g. Kimi K2.6) still works exactly as before.
         const toolsEnabled =
           mode === "ask" ||
           mode === "research" ||
+          mode === "cinematic" ||
           TOOL_CAPABLE_MODELS.has(effectiveModel);
         const tools = toolsEnabled ? buildTools(c.env) : undefined;
-        const stepCap = mode === "research" ? STEP_CAP_RESEARCH : STEP_CAP_DEFAULT;
+        const stepCap =
+          mode === "research"
+            ? STEP_CAP_RESEARCH
+            : mode === "cinematic"
+              ? STEP_CAP_CINEMATIC
+              : STEP_CAP_DEFAULT;
         const result = await streamText({
           model: aiModel,
           system: fullSystemPrompt,
@@ -506,6 +551,35 @@ chatRouter.post("/:projectId", async (c) => {
           mergedFiles = await replaceImagePlaceholders(mergedFiles, c.env.FAL_KEY);
         } catch (imgErr) {
           console.error("Image generation failed (continuing without images):", imgErr);
+        }
+
+        // 8.6 Generate AI hero video via fal Kling (replace FAL_VIDEO[] placeholders)
+        // Cinematic mode emits at least one FAL_VIDEO marker; other modes
+        // generally don't, so the scan short-circuits when no placeholders
+        // are present (zero cost when unused).
+        try {
+          const hasVideoMarker = Object.values(mergedFiles).some(
+            (c2) => typeof c2 === "string" && c2.includes("FAL_VIDEO["),
+          );
+          if (hasVideoMarker) {
+            await stream.writeSSE({
+              data: JSON.stringify({
+                type: "chunk",
+                content:
+                  "\n\n🎬 Rendering hero video (fal Kling text-to-video — this takes 2–4 minutes)...",
+              }),
+              event: "message",
+            });
+            mergedFiles = await replaceVideoPlaceholders(
+              mergedFiles,
+              c.env.FAL_KEY,
+            );
+          }
+        } catch (vidErr) {
+          console.error(
+            "Video generation failed (continuing with poster fallback):",
+            vidErr,
+          );
         }
 
         // 9. Create new Version (reuse latestVersion read above)
