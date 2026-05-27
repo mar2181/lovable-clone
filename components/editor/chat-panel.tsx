@@ -1,11 +1,13 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square, Loader2, AlertCircle } from "lucide-react";
+import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square, Loader2, AlertCircle, ClipboardList, Brain, Rocket } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps, ChatAttachment } from "@/components/editor/chat-message";
 import { GenerationProgress } from "@/components/editor/generation-progress";
+import { TasteToggle } from "@/components/editor/taste-toggle";
+import { StrategyModal } from "@/components/editor/strategy-modal";
 import { DEFAULT_MODEL, VISION_MODEL, AI_MODELS } from "@/lib/models";
 import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
@@ -83,8 +85,25 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   const scrollRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
 
+  // Taste-skill + Outlier Research Engine state. Loaded once on mount; updated
+  // optimistically on user actions and by the worker's `done` event flags.
+  const [tasteEnabled, setTasteEnabled] = useState(true);
+  const [strategyDocExists, setStrategyDocExists] = useState(false);
+  const [showStrategyGate, setShowStrategyGate] = useState(false);
+  const [strategyOpen, setStrategyOpen] = useState(false);
+  const [strategyDigest, setStrategyDigest] = useState<string | null>(null);
+  const [strategyLoading, setStrategyLoading] = useState(false);
+  // The last user prompt that triggered a BUILD (held for re-submission as
+  // a research turn when the gate is clicked).
+  const lastBuildPromptRef = useRef<string>("");
+
   // Raw streamed assistant response — used for parsing only, NEVER rendered.
   const rawAssistantResponseRef = useRef("");
+  // Display buffer for ASK / RESEARCH bubbles. Accumulates both model text
+  // deltas AND tool-heartbeat lines from the worker so the user sees live
+  // progress during long research turns. Decoupled from raw* so JSON parsing
+  // in build mode never sees the heartbeat prose.
+  const displayBufferRef = useRef("");
   // Snapshot of the file map BEFORE this generation, for diff-based summaries.
   const filesAtSubmitRef = useRef<Record<string, string>>({});
   // Tracks whether we've already finalized the assistant message
@@ -128,6 +147,86 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [messages, isGenerating]);
+
+  // Load per-project taste flag + strategy existence on mount. Both endpoints
+  // are cheap KV reads; failure to load is non-fatal (taste stays ON by
+  // default, strategy stays hidden).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const token = await getToken();
+        if (!token) return;
+        const [tasteRes, strategyRes] = await Promise.all([
+          fetch(`${WORKER_URL}/api/projects/${projectId}/taste`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+          fetch(`${WORKER_URL}/api/projects/${projectId}/strategy`, {
+            headers: { Authorization: `Bearer ${token}` },
+          }),
+        ]);
+        if (cancelled) return;
+        if (tasteRes.ok) {
+          const j = await tasteRes.json();
+          setTasteEnabled(j.enabled !== false);
+        }
+        if (strategyRes.ok) {
+          const j = await strategyRes.json();
+          setStrategyDocExists(Boolean(j.exists));
+        }
+      } catch {
+        // ignore — default state is correct
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId, getToken]);
+
+  const handleTasteToggle = useCallback(
+    async (next: boolean) => {
+      const before = tasteEnabled;
+      setTasteEnabled(next); // optimistic
+      try {
+        const token = await getToken();
+        if (!token) throw new Error("not authenticated");
+        const r = await fetch(`${WORKER_URL}/api/projects/${projectId}/taste`, {
+          method: "PUT",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({ enabled: next }),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      } catch (err) {
+        console.error("Taste toggle failed:", err);
+        setTasteEnabled(before); // revert
+      }
+    },
+    [projectId, tasteEnabled, getToken],
+  );
+
+  const openStrategyModal = useCallback(async () => {
+    setStrategyOpen(true);
+    if (strategyDigest) return;
+    setStrategyLoading(true);
+    try {
+      const token = await getToken();
+      if (!token) return;
+      const r = await fetch(`${WORKER_URL}/api/projects/${projectId}/strategy`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      if (r.ok) {
+        const j = await r.json();
+        setStrategyDigest(typeof j.digest === "string" ? j.digest : null);
+      }
+    } catch (err) {
+      console.error("Strategy load failed:", err);
+    } finally {
+      setStrategyLoading(false);
+    }
+  }, [projectId, getToken, strategyDigest]);
 
   const MAX_IMAGES = 10;
   // Raw upload cap is intentionally generous — modern phones produce 8-15 MB
@@ -319,15 +418,27 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleSubmit = async (e: React.FormEvent, submitMode: "ask" | "build" = "build") => {
+  const handleSubmit = async (
+    e: React.FormEvent,
+    submitMode: "ask" | "build" | "research" = "build",
+    overridePrompt?: string,
+  ) => {
     e.preventDefault();
-    if (!prompt.trim() || isGenerating) return;
+    const usePrompt = (overridePrompt ?? prompt).trim();
+    if (!usePrompt || isGenerating) return;
+    // Hide the strategy gate the moment any new turn starts — clicking
+    // through it or dismissing it both should retire the UI.
+    setShowStrategyGate(false);
     // Guard against keyboard-Enter while an attachment is mid-upload. The
     // buttons are visually disabled in this state, but keyboard shortcuts
     // still fire — they need their own check.
     if (attachments.some((s) => s.status === "uploading")) return;
 
-    const userMessage = prompt;
+    const userMessage = usePrompt;
+    if (submitMode === "build") {
+      // Keep a copy for the strategy gate's "Run strategy first" re-submit.
+      lastBuildPromptRef.current = userMessage;
+    }
     // Snapshot the slot list. We split it into two payloads:
     //   • visionImages: every slot's compressed base64 — sent to the model as
     //     vision input so it can SEE the photo (e.g. recognize a person, room,
@@ -356,8 +467,11 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     // across the streaming lifecycle (state changes during stream are fine).
     const currentMode = submitMode;
 
-    setPrompt("");
-    setAttachments([]);
+    // Only clear the textarea when the prompt came from there (not an override).
+    if (!overridePrompt) {
+      setPrompt("");
+      setAttachments([]);
+    }
     setMessages((prev) => [
       ...prev,
       {
@@ -367,8 +481,15 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       },
     ]);
     setIsGenerating(true);
-    setStatusMessage(currentMode === "ask" ? "Thinking…" : "Connecting to AI…");
+    setStatusMessage(
+      currentMode === "ask"
+        ? "Thinking…"
+        : currentMode === "research"
+          ? "Researching the top sites in your niche — this takes 3–5 minutes…"
+          : "Connecting to AI…",
+    );
     rawAssistantResponseRef.current = "";
+    displayBufferRef.current = "";
     doneReceivedRef.current = false;
     finalizedRef.current = false;
     stopReasonRef.current = null;
@@ -383,12 +504,18 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     const controller = new AbortController();
     abortRef.current = controller;
     let watchdog: ReturnType<typeof setTimeout> | null = null;
+    // Research turns are tool-heavy and routinely sit silent for 60–90 s
+    // between Firecrawl scrapes. The default 3-min watchdog kills them
+    // prematurely. Each tool heartbeat re-arms the watchdog (via armWatchdog
+    // on every onmessage), so the relevant ceiling is "silence between
+    // events", not total elapsed time. 6 min covers slow scrapes safely.
+    const watchdogMs = currentMode === "research" ? 360_000 : 180_000;
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);
       watchdog = setTimeout(() => {
         stopReasonRef.current = "timeout";
         controller.abort();
-      }, 180_000);
+      }, watchdogMs);
     };
 
     try {
@@ -437,20 +564,26 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             if (data.type === "chunk") {
               // Accumulate raw chunks for parsing only — never render them.
               rawAssistantResponseRef.current += data.content || "";
+              displayBufferRef.current += data.content || "";
               const accumulated = rawAssistantResponseRef.current;
 
-              if (currentMode === "ask") {
-                // ASK mode: stream the prose directly into the assistant bubble.
-                // No JSON parse, no file updates.
+              if (currentMode === "ask" || currentMode === "research") {
+                // Stream the prose (+ any earlier tool heartbeats) into the
+                // assistant bubble. ASK doesn't parse JSON. RESEARCH parses
+                // at done time, not mid-stream — its JSON envelope is the
+                // tail of the response, not the bulk.
+                const display = displayBufferRef.current;
                 setMessages((prev) => {
                   const next = [...prev];
                   const last = next[next.length - 1];
                   if (last && last.role === "assistant") {
-                    next[next.length - 1] = { ...last, content: accumulated };
+                    next[next.length - 1] = { ...last, content: display };
                   }
                   return next;
                 });
-                setStatusMessage("Answering…");
+                setStatusMessage(
+                  currentMode === "ask" ? "Answering…" : "Writing strategy…",
+                );
                 return;
               }
 
@@ -472,6 +605,26 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 // ignore — partial JSON is expected mid-stream
               }
 
+            } else if (data.type === "tool") {
+              // Tool-heartbeat chunk from the worker. Decorative only — never
+              // contributes to rawAssistantResponseRef (would break JSON
+              // parsing in build mode). For ASK / RESEARCH, append to the
+              // visible bubble. For BUILD, surface as a status line.
+              displayBufferRef.current += data.content || "";
+              if (currentMode === "ask" || currentMode === "research") {
+                const display = displayBufferRef.current;
+                setMessages((prev) => {
+                  const next = [...prev];
+                  const last = next[next.length - 1];
+                  if (last && last.role === "assistant") {
+                    next[next.length - 1] = { ...last, content: display };
+                  }
+                  return next;
+                });
+              }
+              const toolName = typeof data.toolName === "string" ? data.toolName : "tool";
+              setStatusMessage(`${toolName}…`);
+
             } else if (data.type === "done") {
               doneReceivedRef.current = true;
 
@@ -488,6 +641,20 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
 
               setStatusMessage(PLACEHOLDER_PARSING);
 
+              // Flags from the worker that drive the taste/strategy UI.
+              //   strategyGateAvailable — first scaffold + no prior research = offer the gate.
+              //   strategyDocExists     — KV has a digest (or one was just written this turn).
+              if (typeof data.strategyDocExists === "boolean") {
+                setStrategyDocExists(data.strategyDocExists);
+                if (data.strategyDocExists) {
+                  // Clear cached digest so the modal re-fetches the fresh one.
+                  setStrategyDigest(null);
+                }
+              }
+              if (data.strategyGateAvailable === true) {
+                setShowStrategyGate(true);
+              }
+
               if (data.files && typeof data.files === "object") {
                 onUpdateFiles(data.files);
                 if (data.dependencies && onUpdateDependencies) {
@@ -499,7 +666,13 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 // parsing failed), show that instead of the generic
                 // "Try rephrasing your prompt" string.
                 const aiMessage = typeof data.aiMessage === "string" ? data.aiMessage.trim() : "";
-                finalizeAssistantMessage(aiMessage || buildDoneSummary(diff));
+                // Research turns produce a Strategy.tsx file. Use a friendlier
+                // summary than the generic "N new file" string.
+                const summary =
+                  currentMode === "research"
+                    ? `Strategy drafted — open /strategy in the preview to read it. Future builds will use this as source-of-truth automatically.`
+                    : aiMessage || buildDoneSummary(diff);
+                finalizeAssistantMessage(summary);
               } else {
                 finalizeAssistantMessage(
                   "Generation finished, but the response could not be parsed into files. Please try again."
@@ -601,6 +774,12 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
 
   return (
     <div className="flex flex-col h-full relative">
+      <StrategyModal
+        open={strategyOpen}
+        onClose={() => setStrategyOpen(false)}
+        digest={strategyDigest}
+        loading={strategyLoading}
+      />
       <div ref={scrollRef} className="flex-1 overflow-y-auto p-4 space-y-6 pb-20">
         {messages.length === 0 ? (
           <div className="flex gap-4 items-start">
@@ -619,6 +798,46 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           messages.map((msg, i) => (
             <ChatMessage key={i} role={msg.role} content={msg.content} attachments={msg.attachments} />
           ))
+        )}
+
+        {showStrategyGate && !isGenerating && (
+          <div className="flex gap-4 items-start">
+            <div className="w-8 h-8 rounded-full bg-amber-500/15 flex items-center justify-center border border-amber-500/30 shrink-0">
+              <Brain className="w-4 h-4 text-amber-300" />
+            </div>
+            <div className="space-y-3 pt-0.5 max-w-xl">
+              <p className="text-sm text-zinc-200 leading-relaxed">
+                Want me to research the top sites in this niche first?
+                I&rsquo;ll scrape the actual winners, derive the optimal
+                section order, and build from real data instead of guessing.
+                Takes about 3–5 minutes — but every future build uses it as
+                source-of-truth.
+              </p>
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={(e) =>
+                    handleSubmit(e as unknown as React.FormEvent, "research", lastBuildPromptRef.current)
+                  }
+                  className="h-9 px-3.5 rounded-lg bg-amber-500/20 text-amber-100 border border-amber-500/40 hover:bg-amber-500/30 text-sm font-medium flex items-center gap-2 transition-colors"
+                >
+                  <Brain className="w-4 h-4" />
+                  Run strategy first
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowStrategyGate(false)}
+                  className="h-9 px-3.5 rounded-lg bg-zinc-800 text-zinc-300 border border-white/10 hover:bg-zinc-700 text-sm font-medium flex items-center gap-2 transition-colors"
+                >
+                  <Rocket className="w-4 h-4" />
+                  Skip — keep building
+                </button>
+              </div>
+              <p className="text-[11px] text-zinc-500">
+                You can always run research later from the chat.
+              </p>
+            </div>
+          </div>
         )}
       </div>
 
@@ -655,118 +874,162 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
             }}
           />
 
-          <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
-            {attachments.length > 0 && (
-              <div className="mb-2 flex flex-wrap gap-2">
-                {attachments.map((slot) => (
-                  <div key={slot.id} className="relative inline-block" title={slot.filename}>
-                    <img
-                      src={slot.dataUrl}
-                      alt={slot.filename}
-                      className={`h-16 w-16 object-cover rounded-md border border-white/10 ${slot.status !== "uploaded" ? "opacity-60" : ""}`}
-                    />
-                    {slot.status === "uploading" && (
-                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-md">
-                        <Loader2 className="w-4 h-4 text-white animate-spin" />
-                      </div>
-                    )}
-                    {slot.status === "failed" && (
-                      <div
-                        className="absolute inset-0 flex items-center justify-center bg-red-900/60 rounded-md"
-                        title={slot.errorMessage || "Upload failed — vision only"}
-                      >
-                        <AlertCircle className="w-4 h-4 text-red-200" />
-                      </div>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => removeAttachment(slot.id)}
-                      className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
+          {/* Attachments preview — full-width row above the controls. */}
+          {attachments.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-2">
+              {attachments.map((slot) => (
+                <div key={slot.id} className="relative inline-block" title={slot.filename}>
+                  <img
+                    src={slot.dataUrl}
+                    alt={slot.filename}
+                    className={`h-16 w-16 object-cover rounded-md border border-white/10 ${slot.status !== "uploaded" ? "opacity-60" : ""}`}
+                  />
+                  {slot.status === "uploading" && (
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-md">
+                      <Loader2 className="w-4 h-4 text-white animate-spin" />
+                    </div>
+                  )}
+                  {slot.status === "failed" && (
+                    <div
+                      className="absolute inset-0 flex items-center justify-center bg-red-900/60 rounded-md"
+                      title={slot.errorMessage || "Upload failed — vision only"}
                     >
-                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
-                    </button>
-                  </div>
-                ))}
-                {previousModel && (
-                  <div className="w-full flex items-center gap-1 text-[10px] text-blue-400">
-                    <Eye className="w-3 h-3" />
-                    <span>Vision model active</span>
-                  </div>
-                )}
-                {attachments.some((s) => s.status === "uploading") && (
-                  <div className="w-full flex items-center gap-1 text-[10px] text-zinc-400">
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                    <span>Uploading attachments… submit will unlock when done.</span>
-                  </div>
-                )}
-                {attachments.some((s) => s.status === "failed") && (
-                  <div className="w-full flex items-center gap-1 text-[10px] text-red-400">
-                    <AlertCircle className="w-3 h-3" />
-                    <span>One or more uploads failed. The AI can still SEE these images, but it can&apos;t embed them on the site.</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-center gap-2">
-              <input
-                type="file"
-                accept="image/*"
-                multiple
-                className="hidden"
-                ref={fileInputRef}
-                onChange={handleImageUpload}
-              />
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
-                onClick={() => fileInputRef.current?.click()}
-              >
-                <Paperclip className="w-4 h-4" />
-              </Button>
+                      <AlertCircle className="w-4 h-4 text-red-200" />
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => removeAttachment(slot.id)}
+                    className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
+                  </button>
+                </div>
+              ))}
+              {previousModel && (
+                <div className="w-full flex items-center gap-1 text-[10px] text-blue-400">
+                  <Eye className="w-3 h-3" />
+                  <span>Vision model active</span>
+                </div>
+              )}
+              {attachments.some((s) => s.status === "uploading") && (
+                <div className="w-full flex items-center gap-1 text-[10px] text-zinc-400">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  <span>Uploading attachments… submit will unlock when done.</span>
+                </div>
+              )}
+              {attachments.some((s) => s.status === "failed") && (
+                <div className="w-full flex items-center gap-1 text-[10px] text-red-400">
+                  <AlertCircle className="w-3 h-3" />
+                  <span>One or more uploads failed. The AI can still SEE these images, but it can&apos;t embed them on the site.</span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/*
+            Compose controls — two rows so nothing is crammed:
+              ROW A (config)   Model · 🎨 Taste · 📋 Strategy (conditional)
+              ROW B (actions)  📎 Attach   |   💬 Ask · 🧠 Research · 🔨 Build/Stop
+
+            Width never has to grow: the actions row keeps a fixed compact
+            layout, and the config row wraps cleanly on narrow widths.
+          */}
+          <div className="mt-2 pt-2 border-t border-white/5 bg-transparent space-y-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <ModelSelector
                 selectedModel={selectedModel}
                 onModelChange={setSelectedModel}
                 disabled={isGenerating}
               />
+              <TasteToggle
+                enabled={tasteEnabled}
+                onToggle={handleTasteToggle}
+                disabled={isGenerating}
+              />
+              {strategyDocExists && (
+                <button
+                  type="button"
+                  onClick={openStrategyModal}
+                  disabled={isGenerating}
+                  title="View the Outlier Research strategy digest. Injected into every Build as source-of-truth."
+                  className="h-8 px-2.5 rounded-lg border border-amber-500/30 bg-amber-500/10 text-amber-200 hover:bg-amber-500/20 text-xs font-medium flex items-center gap-1.5 disabled:opacity-50 transition-colors"
+                >
+                  <ClipboardList className="w-3.5 h-3.5" />
+                  Strategy
+                </button>
+              )}
             </div>
 
-            <div className="flex items-center gap-2">
-              <Button
-                type="button"
-                size="sm"
-                disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
-                onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "ask")}
-                className="h-8 px-3 rounded-lg bg-zinc-800 text-white border border-white/10 hover:bg-zinc-700 disabled:opacity-50"
-                title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Discuss without making any code changes (Ctrl+Enter)"}
-              >
-                <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
-                Ask
-              </Button>
-              {isGenerating ? (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <input
+                  type="file"
+                  accept="image/*"
+                  multiple
+                  className="hidden"
+                  ref={fileInputRef}
+                  onChange={handleImageUpload}
+                />
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
+                  onClick={() => fileInputRef.current?.click()}
+                  title="Attach images"
+                >
+                  <Paperclip className="w-4 h-4" />
+                </Button>
+              </div>
+
+              <div className="flex items-center gap-2">
                 <Button
                   type="button"
                   size="sm"
-                  onClick={handleStop}
-                  className="h-8 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700"
-                  title="Stop the current generation"
+                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "ask")}
+                  className="h-8 px-3 rounded-lg bg-zinc-800 text-white border border-white/10 hover:bg-zinc-700 disabled:opacity-50"
+                  title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Discuss without making any code changes (Ctrl+Enter)"}
                 >
-                  <Square className="w-3.5 h-3.5 mr-1.5 fill-current" />
-                  Stop
+                  <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
+                  Ask
                 </Button>
-              ) : (
                 <Button
-                  type="submit"
+                  type="button"
                   size="sm"
-                  disabled={!prompt.trim() || hasUploadingAttachment}
-                  className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Modify the code (Enter)"}
+                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "research")}
+                  className="h-8 px-3 rounded-lg bg-amber-500/20 text-amber-100 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-50"
+                  title="Outlier Research Engine — scrape the top sites in this niche and build a Strategy.tsx as source-of-truth (~3–5 min)."
                 >
-                  <Hammer className="w-3.5 h-3.5 mr-1.5" />
-                  Build
+                  <Brain className="w-3.5 h-3.5 mr-1.5" />
+                  Research
                 </Button>
-              )}
+                {isGenerating ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={handleStop}
+                    className="h-8 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700"
+                    title="Stop the current generation"
+                  >
+                    <Square className="w-3.5 h-3.5 mr-1.5 fill-current" />
+                    Stop
+                  </Button>
+                ) : (
+                  <Button
+                    type="submit"
+                    size="sm"
+                    disabled={!prompt.trim() || hasUploadingAttachment}
+                    className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+                    title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Modify the code (Enter)"}
+                  >
+                    <Hammer className="w-3.5 h-3.5 mr-1.5" />
+                    Build
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </form>
