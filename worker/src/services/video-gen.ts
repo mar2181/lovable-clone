@@ -6,8 +6,11 @@
 // FAL_VIDEO marker for the hero background video, and the worker resolves
 // it after the JSON envelope is parsed.
 
-const KLING_T2V_ENDPOINT =
-  "https://fal.run/fal-ai/kling-video/v1.6/standard/text-to-video";
+// Kling text-to-video takes 2-4 min, so the synchronous fal.run wrapper times
+// out (server- or client-side) before completion. We use the QUEUE API:
+// submit → poll status every few seconds → fetch result when COMPLETED.
+const KLING_QUEUE_SUBMIT_URL =
+  "https://queue.fal.run/fal-ai/kling-video/v1.6/standard/text-to-video";
 
 const VIDEO_PLACEHOLDER_REGEX = /FAL_VIDEO\[([^\]]+)\]/g;
 
@@ -15,13 +18,17 @@ const VIDEO_PLACEHOLDER_REGEX = /FAL_VIDEO\[([^\]]+)\]/g;
 // allow a small bound so a richer page could request multiple short clips.
 const MAX_VIDEOS_PER_TURN = 2;
 
-// Single-render cap. fal Kling t2v takes 2-4 min in practice; a 5-min cap
-// covers the slow tail without letting a stuck job stall the whole request.
+// Per-video cap (covers worst-case Kling latency).
 const PER_VIDEO_TIMEOUT_MS = 300_000;
 
 // Global cap across all videos in parallel. Same value because we render
 // in parallel anyway.
 const GLOBAL_VIDEO_TIMEOUT_MS = 320_000;
+
+// Polling cadence for the queue API. fal expects ~5s between polls.
+const POLL_INTERVAL_MS = 5_000;
+const SUBMIT_TIMEOUT_MS = 15_000;
+const POLL_REQUEST_TIMEOUT_MS = 15_000;
 
 interface FalVideoResult {
   video?: { url?: string; content_type?: string };
@@ -47,56 +54,174 @@ function promptForCinematicVideo(description: string): string {
   ].join(", ");
 }
 
+interface FalQueueSubmitResponse {
+  status?: string;
+  request_id?: string;
+  response_url?: string;
+  status_url?: string;
+}
+
+interface FalQueueStatusResponse {
+  status?: "IN_QUEUE" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
+  request_id?: string;
+  response_url?: string;
+  logs?: Array<{ message?: string }> | null;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchWithTimeout(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(id);
+  }
+}
+
 async function generateKlingVideo(
   falKey: string,
   description: string,
 ): Promise<string | null> {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(
-    () => controller.abort(),
-    PER_VIDEO_TIMEOUT_MS,
-  );
-
+  // 1. Submit to queue.
+  let submit: FalQueueSubmitResponse;
   try {
-    const res = await fetch(KLING_T2V_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Key ${falKey}`,
-        "Content-Type": "application/json",
+    const res = await fetchWithTimeout(
+      KLING_QUEUE_SUBMIT_URL,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Key ${falKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          prompt: promptForCinematicVideo(description),
+          duration: "5",
+          aspect_ratio: "16:9",
+        }),
       },
-      body: JSON.stringify({
-        prompt: promptForCinematicVideo(description),
-        duration: "5",
-        aspect_ratio: "16:9",
-      }),
-      signal: controller.signal,
-    });
+      SUBMIT_TIMEOUT_MS,
+    );
 
     if (!res.ok) {
       const text = await res.text().catch(() => "");
       console.error(
-        "fal.ai Kling t2v failed:",
+        "fal.ai Kling queue submit failed:",
         res.status,
         res.statusText,
-        text.slice(0, 300),
+        text.slice(0, 400),
       );
       return null;
     }
 
-    const data = (await res.json()) as FalVideoResult;
-    return data.video?.url || null;
+    submit = (await res.json()) as FalQueueSubmitResponse;
   } catch (err: any) {
-    if (err?.name === "AbortError") {
-      console.error(
-        `fal.ai Kling t2v timed out after ${PER_VIDEO_TIMEOUT_MS}ms`,
-      );
-    } else {
-      console.error("fal.ai Kling t2v threw:", err);
-    }
+    console.error("fal.ai Kling queue submit threw:", err?.message || err);
     return null;
-  } finally {
-    clearTimeout(timeoutId);
   }
+
+  const statusUrl = submit.status_url;
+  const responseUrl = submit.response_url;
+  if (!statusUrl || !responseUrl) {
+    console.error(
+      "fal.ai Kling queue submit returned no status_url / response_url:",
+      submit,
+    );
+    return null;
+  }
+
+  // 2. Poll status until COMPLETED / FAILED / timeout.
+  const deadline = Date.now() + PER_VIDEO_TIMEOUT_MS;
+  let lastStatus = "IN_QUEUE";
+  while (Date.now() < deadline) {
+    await sleep(POLL_INTERVAL_MS);
+
+    let statusJson: FalQueueStatusResponse;
+    try {
+      const statusRes = await fetchWithTimeout(
+        statusUrl,
+        { headers: { Authorization: `Key ${falKey}` } },
+        POLL_REQUEST_TIMEOUT_MS,
+      );
+      if (!statusRes.ok) {
+        // Transient 5xx — log and keep polling.
+        console.warn(
+          "fal.ai Kling status poll non-OK:",
+          statusRes.status,
+          statusRes.statusText,
+        );
+        continue;
+      }
+      statusJson = (await statusRes.json()) as FalQueueStatusResponse;
+    } catch (err: any) {
+      console.warn(
+        "fal.ai Kling status poll threw (will retry):",
+        err?.message || err,
+      );
+      continue;
+    }
+
+    const status = statusJson.status || "UNKNOWN";
+    if (status !== lastStatus) {
+      console.log(`fal.ai Kling: status → ${status}`);
+      lastStatus = status;
+    }
+
+    if (status === "COMPLETED") {
+      // 3. Fetch the result.
+      try {
+        const resultRes = await fetchWithTimeout(
+          responseUrl,
+          { headers: { Authorization: `Key ${falKey}` } },
+          POLL_REQUEST_TIMEOUT_MS,
+        );
+        if (!resultRes.ok) {
+          const text = await resultRes.text().catch(() => "");
+          console.error(
+            "fal.ai Kling result fetch failed:",
+            resultRes.status,
+            text.slice(0, 400),
+          );
+          return null;
+        }
+        const data = (await resultRes.json()) as FalVideoResult;
+        const url = data.video?.url || null;
+        if (!url) {
+          console.error(
+            "fal.ai Kling COMPLETED but no video.url in payload:",
+            JSON.stringify(data).slice(0, 400),
+          );
+        }
+        return url;
+      } catch (err: any) {
+        console.error(
+          "fal.ai Kling result fetch threw:",
+          err?.message || err,
+        );
+        return null;
+      }
+    }
+
+    if (status === "FAILED") {
+      console.error(
+        "fal.ai Kling reported FAILED. Logs:",
+        JSON.stringify(statusJson.logs || []).slice(0, 600),
+      );
+      return null;
+    }
+  }
+
+  console.error(
+    `fal.ai Kling timed out after ${PER_VIDEO_TIMEOUT_MS}ms (last status: ${lastStatus})`,
+  );
+  return null;
 }
 
 /**
