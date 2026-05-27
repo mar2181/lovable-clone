@@ -513,14 +513,14 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     // prematurely. Each tool heartbeat re-arms the watchdog (via armWatchdog
     // on every onmessage), so the relevant ceiling is "silence between
     // events", not total elapsed time. 6 min covers slow scrapes safely.
-    // Cinematic turns are silent for 2–4 min during the fal Kling render
-    // (one big synchronous fal.run call after JSON parse, no heartbeats
-    // possible from the model side). Bump to 7 min to leave a safety margin.
+    // Cinematic turns sit silent for the full fal Kling render. Worker side
+    // caps at 10 min (PER_VIDEO_TIMEOUT_MS = 600_000) + image gen (~45 s) +
+    // R2 asset copy (~10 s). Watchdog needs to outlast the worker, so 12 min.
     const watchdogMs =
       currentMode === "research"
         ? 360_000
         : currentMode === "cinematic"
-          ? 420_000
+          ? 720_000
           : 180_000;
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);

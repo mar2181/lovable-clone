@@ -16,6 +16,12 @@ const IMAGE_EXTENSIONS: Record<string, string> = {
   "image/svg+xml": "svg",
 };
 
+const VIDEO_EXTENSIONS: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/webm": "webm",
+  "video/quicktime": "mov",
+};
+
 function sanitizeName(name: string): string {
   return name
     .toLowerCase()
@@ -71,6 +77,48 @@ export async function storeDataUrlAsset(args: {
     filename,
     contentType,
     size: bytes.byteLength,
+    url: publicAssetUrl(args.publicBaseUrl, args.projectId, filename),
+  };
+}
+
+export async function storeRemoteVideoAsset(args: {
+  r2: R2Bucket;
+  projectId: string;
+  remoteUrl: string;
+  publicBaseUrl: string;
+  filenameHint?: string;
+}): Promise<StoredAsset | null> {
+  const res = await fetch(args.remoteUrl, {
+    headers: { "User-Agent": "HSSolutions/asset-cache" },
+  });
+
+  if (!res.ok) {
+    console.error("Failed to fetch remote video for asset cache:", res.status, args.remoteUrl);
+    return null;
+  }
+
+  const contentType = res.headers.get("content-type")?.split(";")[0] || "video/mp4";
+  if (!contentType.startsWith("video/")) {
+    console.error("Remote asset is not a video:", contentType, args.remoteUrl);
+    return null;
+  }
+
+  const bytes = new Uint8Array(await res.arrayBuffer());
+  const ext = VIDEO_EXTENSIONS[contentType.toLowerCase()] || "mp4";
+  const filename = `${sanitizeName(args.filenameHint || "hero-video")}-${crypto.randomUUID().slice(0, 8)}.${ext}`;
+  const key = `assets/${args.projectId}/${filename}`;
+
+  await args.r2.put(key, bytes, {
+    httpMetadata: { contentType },
+    customMetadata: { projectId: args.projectId, source: "fal-kling", sourceUrl: args.remoteUrl },
+  });
+
+  return {
+    key,
+    filename,
+    contentType,
+    size: bytes.byteLength,
+    sourceUrl: args.remoteUrl,
     url: publicAssetUrl(args.publicBaseUrl, args.projectId, filename),
   };
 }

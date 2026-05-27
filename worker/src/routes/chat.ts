@@ -542,13 +542,31 @@ chatRouter.post("/:projectId", async (c) => {
         // 8.1 Merge files with context (preserves system defaults + prior user files)
         let mergedFiles = { ...contextFiles, ...sanitizedFiles };
 
+        // Asset persistence. fal.media URLs are ephemeral (expire within
+        // hours). For cinematic mode we copy every fal image + video into
+        // our R2 bucket so the URLs in the generated code stay alive.
+        // Other modes still use fal.media directly (acceptable for ASK/BUILD
+        // where users iterate fast).
+        const assetOptions =
+          mode === "cinematic" && c.env.R2_PROJECTS && c.env.R2_PUBLIC_DOMAIN
+            ? {
+                r2: c.env.R2_PROJECTS,
+                projectId,
+                publicBaseUrl: c.env.R2_PUBLIC_DOMAIN,
+              }
+            : undefined;
+
         // 8.5 Generate AI images via fal.ai (replace FAL_IMAGE[] placeholders)
         try {
           await stream.writeSSE({
             data: JSON.stringify({ type: "chunk", content: "\n\nGenerating AI images..." }),
             event: "message",
           });
-          mergedFiles = await replaceImagePlaceholders(mergedFiles, c.env.FAL_KEY);
+          mergedFiles = await replaceImagePlaceholders(
+            mergedFiles,
+            c.env.FAL_KEY,
+            assetOptions,
+          );
         } catch (imgErr) {
           console.error("Image generation failed (continuing without images):", imgErr);
         }
@@ -566,13 +584,14 @@ chatRouter.post("/:projectId", async (c) => {
               data: JSON.stringify({
                 type: "chunk",
                 content:
-                  "\n\n🎬 Rendering hero video (fal Kling text-to-video — this takes 2–4 minutes)...",
+                  "\n\n🎬 Rendering hero video (fal Kling text-to-video — up to 10 minutes on busy queue days)...",
               }),
               event: "message",
             });
             mergedFiles = await replaceVideoPlaceholders(
               mergedFiles,
               c.env.FAL_KEY,
+              assetOptions,
             );
           }
         } catch (vidErr) {

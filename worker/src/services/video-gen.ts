@@ -5,6 +5,18 @@
 // Cinematic mode is the primary consumer — the model emits a single
 // FAL_VIDEO marker for the hero background video, and the worker resolves
 // it after the JSON envelope is parsed.
+//
+// When `assetOptions` is provided, the resulting MP4 is downloaded and
+// stored in R2 so the URL is permanent. Without it, fal.media URLs are
+// returned directly (those URLs expire — only safe for ephemeral testing).
+
+import { storeRemoteVideoAsset } from "./assets";
+
+export interface VideoAssetOptions {
+  r2: R2Bucket;
+  projectId: string;
+  publicBaseUrl: string;
+}
 
 // Kling text-to-video takes 2-4 min, so the synchronous fal.run wrapper times
 // out (server- or client-side) before completion. We use the QUEUE API:
@@ -18,12 +30,14 @@ const VIDEO_PLACEHOLDER_REGEX = /FAL_VIDEO\[([^\]]+)\]/g;
 // allow a small bound so a richer page could request multiple short clips.
 const MAX_VIDEOS_PER_TURN = 2;
 
-// Per-video cap (covers worst-case Kling latency).
-const PER_VIDEO_TIMEOUT_MS = 300_000;
+// Per-video cap. Kling text-to-video is typically 2-4 min but spikes to
+// 8-10 min when the fal queue is busy. 10 min covers the worst case
+// while still bailing out on a truly stuck job.
+const PER_VIDEO_TIMEOUT_MS = 600_000;
 
 // Global cap across all videos in parallel. Same value because we render
-// in parallel anyway.
-const GLOBAL_VIDEO_TIMEOUT_MS = 320_000;
+// in parallel anyway. Small headroom (+20s) for the polling cadence.
+const GLOBAL_VIDEO_TIMEOUT_MS = 620_000;
 
 // Polling cadence for the queue API. fal expects ~5s between polls.
 const POLL_INTERVAL_MS = 5_000;
@@ -233,6 +247,7 @@ async function generateKlingVideo(
 export async function replaceVideoPlaceholders(
   files: Record<string, string>,
   falKey: string,
+  assetOptions?: VideoAssetOptions,
 ): Promise<Record<string, string>> {
   if (!falKey) return files;
 
@@ -271,8 +286,22 @@ export async function replaceVideoPlaceholders(
 
     const work = Promise.allSettled(
       entries.map(async ([marker, description]) => {
-        const url = await generateKlingVideo(falKey, description);
-        if (url) videoResults.set(marker, url);
+        const remoteUrl = await generateKlingVideo(falKey, description);
+        if (!remoteUrl) return;
+
+        if (assetOptions) {
+          // Copy the fal.media MP4 into our R2 so the URL is permanent.
+          // fal.media URLs are ephemeral and start 404'ing within hours.
+          const asset = await storeRemoteVideoAsset({
+            ...assetOptions,
+            remoteUrl,
+            filenameHint: description.slice(0, 40),
+          });
+          videoResults.set(marker, asset?.url || remoteUrl);
+          return;
+        }
+
+        videoResults.set(marker, remoteUrl);
       }),
     );
 
