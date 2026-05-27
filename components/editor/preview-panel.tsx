@@ -12,13 +12,193 @@ import {
 import { atomDark } from "@codesandbox/sandpack-themes";
 import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
 import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
+import { InspectorPanel } from "@/components/editor/inspector-panel";
 import { useSelectStore, makeSelection } from "@/lib/select-store";
 import { toast } from "sonner";
 
 interface PreviewPanelProps {
   files: Record<string, string>;
   dependencies?: Record<string, string>;
+  projectId?: string;
+  onInlineApplied?: (files: Record<string, string>, deps: Record<string, string>) => void;
+  onOpenCode?: () => void;
 }
+
+// Inline picker script that runs inside the Sandpack iframe. Listens for
+// enable/disable from the parent; on enable, hooks pointer events to draw
+// a hover/selection outline and posts the clicked element's metadata back.
+// Vanilla JS — no React, no bundler steps. Keep it tight.
+const SANDPACK_PICKER_SCRIPT = `
+(function(){
+  var MSG_SRC = "lovable-select";
+  var enabled = false;
+  var hoverEl = null;
+  var hoverBox = null;
+  var selectBox = null;
+
+  function ensureBoxes(){
+    if (!hoverBox){
+      hoverBox = document.createElement("div");
+      hoverBox.style.cssText = "position:fixed;pointer-events:none;border:2px solid rgba(59,130,246,0.65);background:rgba(59,130,246,0.10);z-index:2147483646;transition:all 60ms ease-out;border-radius:2px;display:none;";
+      document.body.appendChild(hoverBox);
+    }
+    if (!selectBox){
+      selectBox = document.createElement("div");
+      selectBox.style.cssText = "position:fixed;pointer-events:none;border:2px solid #3b82f6;background:rgba(59,130,246,0.16);z-index:2147483647;border-radius:2px;display:none;";
+      document.body.appendChild(selectBox);
+    }
+  }
+
+  function paintBox(box, el){
+    if (!el || !box){ if (box) box.style.display = "none"; return; }
+    var r = el.getBoundingClientRect();
+    if (r.width === 0 && r.height === 0){ box.style.display = "none"; return; }
+    box.style.display = "block";
+    box.style.left = r.left + "px";
+    box.style.top = r.top + "px";
+    box.style.width = r.width + "px";
+    box.style.height = r.height + "px";
+  }
+
+  function selectorPath(el){
+    var parts = [];
+    var node = el;
+    var depth = 0;
+    while (node && node.nodeType === 1 && depth < 8){
+      var part = node.tagName.toLowerCase();
+      if (node.id){ part += "#" + node.id; parts.unshift(part); break; }
+      if (node.className && typeof node.className === "string"){
+        var cls = node.className.trim().split(/\\s+/).slice(0,2).join(".");
+        if (cls) part += "." + cls;
+      }
+      var parent = node.parentElement;
+      if (parent){
+        var sib = Array.prototype.indexOf.call(parent.children, node);
+        if (sib > 0) part += ":nth-child(" + (sib + 1) + ")";
+      }
+      parts.unshift(part);
+      node = parent;
+      depth++;
+    }
+    return parts.join(" > ");
+  }
+
+  function pickAttrs(el){
+    var attrs = {};
+    if (!el.attributes) return attrs;
+    for (var i = 0; i < el.attributes.length; i++){
+      var a = el.attributes[i];
+      attrs[a.name] = a.value;
+    }
+    return attrs;
+  }
+
+  function pickStyles(el){
+    var cs = getComputedStyle(el);
+    return {
+      color: cs.color,
+      backgroundColor: cs.backgroundColor,
+      fontSize: cs.fontSize,
+      fontWeight: cs.fontWeight,
+      display: cs.display,
+    };
+  }
+
+  function ancestorContext(el){
+    var bits = [];
+    var node = el.parentElement;
+    var depth = 0;
+    while (node && depth < 4){
+      bits.unshift(node.tagName.toLowerCase());
+      node = node.parentElement;
+      depth++;
+    }
+    return bits.join(" > ");
+  }
+
+  function buildPayload(el){
+    var r = el.getBoundingClientRect();
+    return {
+      tag: el.tagName.toLowerCase(),
+      text: (el.textContent || "").slice(0, 400),
+      selectorPath: selectorPath(el),
+      attributes: pickAttrs(el),
+      computedStyles: pickStyles(el),
+      outerHTML: (el.outerHTML || "").slice(0, 4000),
+      ancestorContext: ancestorContext(el),
+      bbox: { x: r.left, y: r.top, width: r.width, height: r.height },
+    };
+  }
+
+  function sendUp(type, payload){
+    try {
+      parent.postMessage({ source: MSG_SRC, v: 1, type: type, payload: payload || {} }, "*");
+    } catch(e){}
+  }
+
+  function onMouseMove(e){
+    if (!enabled) return;
+    var el = e.target;
+    if (!el || el === hoverBox || el === selectBox) return;
+    hoverEl = el;
+    ensureBoxes();
+    paintBox(hoverBox, el);
+  }
+
+  function onMouseOut(){
+    if (hoverBox) hoverBox.style.display = "none";
+  }
+
+  function onClick(e){
+    if (!enabled) return;
+    var el = e.target;
+    if (!el || el === hoverBox || el === selectBox) return;
+    e.preventDefault();
+    e.stopPropagation();
+    ensureBoxes();
+    paintBox(selectBox, el);
+    sendUp("selected", buildPayload(el));
+  }
+
+  function repaint(){
+    if (hoverEl) paintBox(hoverBox, hoverEl);
+  }
+
+  function enable(){
+    if (enabled) return;
+    enabled = true;
+    document.addEventListener("mousemove", onMouseMove, true);
+    document.addEventListener("mouseout", onMouseOut, true);
+    document.addEventListener("click", onClick, true);
+    window.addEventListener("scroll", repaint, true);
+    window.addEventListener("resize", repaint);
+  }
+
+  function disable(){
+    enabled = false;
+    document.removeEventListener("mousemove", onMouseMove, true);
+    document.removeEventListener("mouseout", onMouseOut, true);
+    document.removeEventListener("click", onClick, true);
+    window.removeEventListener("scroll", repaint, true);
+    window.removeEventListener("resize", repaint);
+    if (hoverBox) hoverBox.style.display = "none";
+    if (selectBox) selectBox.style.display = "none";
+  }
+
+  window.addEventListener("message", function(ev){
+    var d = ev.data;
+    if (!d || d.source !== MSG_SRC || d.v !== 1) return;
+    if (d.type === "enable") enable();
+    else if (d.type === "disable") disable();
+    else if (d.type === "clear") { if (selectBox) selectBox.style.display = "none"; }
+  });
+
+  // Announce readiness on load — handles re-mounts after Sandpack rebuilds.
+  function ready(){ sendUp("ready"); }
+  if (document.readyState === "complete") ready();
+  else window.addEventListener("load", ready);
+})();
+`;
 
 // Clean HTML template — Tailwind is loaded via Sandpack's externalResources, NOT here
 const SANDPACK_INDEX_HTML = `<!DOCTYPE html>
@@ -37,6 +217,7 @@ const SANDPACK_INDEX_HTML = `<!DOCTYPE html>
 </head>
 <body>
   <div id="root"></div>
+  <script>${SANDPACK_PICKER_SCRIPT}</script>
 </body>
 </html>`;
 
@@ -231,7 +412,7 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
   return prepared;
 }
 
-export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
+export function PreviewPanel({ files, dependencies = {}, projectId, onInlineApplied, onOpenCode }: PreviewPanelProps) {
   const [device, setDevice] = useState<"desktop" | "mobile">("desktop");
   const [key, setKey] = useState(0);
 
@@ -505,6 +686,14 @@ export function PreviewPanel({ files, dependencies = {} }: PreviewPanelProps) {
               />
             </SandpackLayout>
           </SandpackProvider>
+
+          {projectId && onInlineApplied && (
+            <InspectorPanel
+              projectId={projectId}
+              onApplied={onInlineApplied}
+              onOpenCode={onOpenCode}
+            />
+          )}
         </div>
       </div>
     </div>

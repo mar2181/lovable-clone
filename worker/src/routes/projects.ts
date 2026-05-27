@@ -317,4 +317,145 @@ projectsRouter.delete("/:id", async (c) => {
   }
 });
 
+// ── POST /:id/inline-edits — apply a batch of bounded edits without an AI turn ─
+// Used by the visual editor's Inspector panel. Each edit is a literal string
+// swap (text or img src). We reject ambiguous matches so a single edit can't
+// silently rewrite unrelated occurrences elsewhere in the project.
+//
+// Body shape:
+//   { edits: [{ kind: "text" | "img-src", oldValue: string, newValue: string }] }
+//
+// Response:
+//   { newVersion: number, files: {...}, dependencies: {...}, applied: N,
+//     rejected: [{ index, reason }] }
+interface InlineEdit {
+  kind: "text" | "img-src";
+  oldValue: string;
+  newValue: string;
+}
+
+function countOccurrences(haystack: string, needle: string): number {
+  if (!needle) return 0;
+  let count = 0;
+  let i = 0;
+  while ((i = haystack.indexOf(needle, i)) !== -1) {
+    count++;
+    i += needle.length;
+  }
+  return count;
+}
+
+projectsRouter.post("/:id/inline-edits", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  const r2 = c.env.R2_PROJECTS;
+
+  try {
+    // Ownership
+    const projStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projStr) return c.json({ error: "Project not found" }, 404);
+
+    const body = await c.req.json().catch(() => null);
+    if (!body || !Array.isArray(body.edits) || body.edits.length === 0) {
+      return c.json({ error: "Body must include a non-empty edits array" }, 400);
+    }
+    if (body.edits.length > 20) {
+      return c.json({ error: "Too many edits in one request (max 20)" }, 400);
+    }
+
+    const edits: InlineEdit[] = body.edits.filter(
+      (e: any) =>
+        e &&
+        (e.kind === "text" || e.kind === "img-src") &&
+        typeof e.oldValue === "string" &&
+        typeof e.newValue === "string" &&
+        e.oldValue.length > 0,
+    );
+    if (edits.length === 0) {
+      return c.json({ error: "No valid edits in payload" }, 400);
+    }
+
+    // Load latest version files
+    const latestVersionStr = await kv.get(`project:${projectId}:latest_version`);
+    if (!latestVersionStr) {
+      return c.json({ error: "Project has no versions yet" }, 422);
+    }
+    const latestVersion = parseInt(latestVersionStr);
+    const obj = await r2.get(`${projectId}/v${latestVersion}.json`);
+    if (!obj) return c.json({ error: "Latest version data missing" }, 422);
+    const versionData = JSON.parse(await obj.text());
+    const files: Record<string, string> = { ...(versionData?.files || {}) };
+    const dependencies = versionData?.dependencies || {};
+
+    // Apply each edit, tracking outcomes
+    const rejected: Array<{ index: number; reason: string }> = [];
+    let appliedCount = 0;
+
+    edits.forEach((edit, idx) => {
+      if (edit.oldValue === edit.newValue) {
+        rejected.push({ index: idx, reason: "no change" });
+        return;
+      }
+      let totalMatches = 0;
+      const matchingFiles: string[] = [];
+      for (const [path, content] of Object.entries(files)) {
+        const n = countOccurrences(content, edit.oldValue);
+        if (n > 0) {
+          totalMatches += n;
+          matchingFiles.push(path);
+        }
+      }
+      if (totalMatches === 0) {
+        rejected.push({ index: idx, reason: `original value not found in any file` });
+        return;
+      }
+      if (totalMatches > 1) {
+        rejected.push({
+          index: idx,
+          reason: `ambiguous — original value appears ${totalMatches}× across ${matchingFiles.length} file(s); edit it in the code panel instead`,
+        });
+        return;
+      }
+      // Exactly one occurrence — safe to swap
+      const file = matchingFiles[0];
+      const before = files[file];
+      const i = before.indexOf(edit.oldValue);
+      files[file] = before.slice(0, i) + edit.newValue + before.slice(i + edit.oldValue.length);
+      appliedCount++;
+    });
+
+    if (appliedCount === 0) {
+      return c.json({ applied: 0, rejected, files: versionData.files, dependencies }, 200);
+    }
+
+    // Save as a new version (append-only — never overwrites)
+    const newVersionNum = latestVersion + 1;
+    const newVersionData = {
+      version: newVersionNum,
+      createdAt: new Date().toISOString(),
+      prompt: `Inline edits (${appliedCount} ${appliedCount === 1 ? "change" : "changes"})`,
+      files,
+      ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+    };
+    await r2.put(`${projectId}/v${newVersionNum}.json`, JSON.stringify(newVersionData));
+    await kv.put(`project:${projectId}:latest_version`, newVersionNum.toString());
+
+    console.log(
+      `[InlineEdits] user=${userId} project=${projectId} v${newVersionNum} applied=${appliedCount} rejected=${rejected.length}`,
+    );
+
+    return c.json({
+      newVersion: newVersionNum,
+      files,
+      dependencies,
+      applied: appliedCount,
+      rejected,
+    });
+  } catch (error: any) {
+    console.error("[InlineEdits] failed:", error?.message || error);
+    return c.json({ error: "Failed to apply inline edits" }, 500);
+  }
+});
+
 export default projectsRouter;

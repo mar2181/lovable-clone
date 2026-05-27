@@ -120,7 +120,15 @@ export function WorkspacePanel({ projectId, files, dependencies, onFileChange, o
 
         <div className="flex-1 overflow-hidden relative">
           <TabsContent value="preview" className="h-full m-0 absolute inset-0">
-            <PreviewPanel files={files} dependencies={dependencies} />
+            <PreviewPanel
+              files={files}
+              dependencies={dependencies}
+              projectId={projectId}
+              onInlineApplied={(f, d) => {
+                if (onRestore) onRestore(f, d);
+              }}
+              onOpenCode={() => setActiveTab("code")}
+            />
           </TabsContent>
 
           <TabsContent value="code" className="h-full m-0 absolute inset-0">
