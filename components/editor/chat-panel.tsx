@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square, Loader2, AlertCircle, ClipboardList, Brain, Rocket } from "lucide-react";
+import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square, Loader2, AlertCircle, ClipboardList, Brain, Rocket, Film } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
 import { ChatMessage, ChatMessageProps, ChatAttachment } from "@/components/editor/chat-message";
@@ -44,11 +44,13 @@ interface ChatPanelProps {
 const PLACEHOLDER_GENERATING = "Generating your app…";
 const PLACEHOLDER_PARSING = "Parsing files…";
 const PLACEHOLDER_IMAGES = "Generating AI images…";
+const PLACEHOLDER_VIDEO = "Rendering hero video (Kling, ~3 min)…";
 
 // Marker the worker injects into the chunk stream when it switches from
 // streaming model output to running fal.ai image generation. We detect it
 // to update the visible status, but we don't render it in the chat bubble.
 const IMAGE_GEN_MARKER = "Generating AI images";
+const VIDEO_GEN_MARKER = "Rendering hero video";
 
 function summarizeChanges(prev: Record<string, string> | null | undefined, next: Record<string, string>): { added: number; modified: number; total: number } {
   const before = prev || {};
@@ -420,7 +422,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
 
   const handleSubmit = async (
     e: React.FormEvent,
-    submitMode: "ask" | "build" | "research" = "build",
+    submitMode: "ask" | "build" | "research" | "cinematic" = "build",
     overridePrompt?: string,
   ) => {
     e.preventDefault();
@@ -486,7 +488,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         ? "Thinking…"
         : currentMode === "research"
           ? "Researching the top sites in your niche — this takes 3–5 minutes…"
-          : "Connecting to AI…",
+          : currentMode === "cinematic"
+            ? "Rendering cinematic page — Flux stills + Kling 5s hero video (~4 minutes)…"
+            : "Connecting to AI…",
     );
     rawAssistantResponseRef.current = "";
     displayBufferRef.current = "";
@@ -509,7 +513,15 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     // prematurely. Each tool heartbeat re-arms the watchdog (via armWatchdog
     // on every onmessage), so the relevant ceiling is "silence between
     // events", not total elapsed time. 6 min covers slow scrapes safely.
-    const watchdogMs = currentMode === "research" ? 360_000 : 180_000;
+    // Cinematic turns are silent for 2–4 min during the fal Kling render
+    // (one big synchronous fal.run call after JSON parse, no heartbeats
+    // possible from the model side). Bump to 7 min to leave a safety margin.
+    const watchdogMs =
+      currentMode === "research"
+        ? 360_000
+        : currentMode === "cinematic"
+          ? 420_000
+          : 180_000;
     const armWatchdog = () => {
       if (watchdog) clearTimeout(watchdog);
       watchdog = setTimeout(() => {
@@ -587,9 +599,11 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 return;
               }
 
-              // Detect the worker's image-gen marker to update the visible
-              // status (without showing the marker itself in chat).
-              if (typeof data.content === "string" && data.content.includes(IMAGE_GEN_MARKER)) {
+              // Detect the worker's image/video-gen markers to update the
+              // visible status (without showing the marker itself in chat).
+              if (typeof data.content === "string" && data.content.includes(VIDEO_GEN_MARKER)) {
+                setStatusMessage(PLACEHOLDER_VIDEO);
+              } else if (typeof data.content === "string" && data.content.includes(IMAGE_GEN_MARKER)) {
                 setStatusMessage(PLACEHOLDER_IMAGES);
               } else {
                 setStatusMessage("Writing code…");
@@ -930,7 +944,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           {/*
             Compose controls — two rows so nothing is crammed:
               ROW A (config)   Model · 🎨 Taste · 📋 Strategy (conditional)
-              ROW B (actions)  📎 Attach   |   💬 Ask · 🧠 Research · 🔨 Build/Stop
+              ROW B (actions)  📎 Attach   |   💬 Ask · 🧠 Research · 🎬 Cinematic · 🔨 Build/Stop
 
             Width never has to grow: the actions row keeps a fixed compact
             layout, and the config row wraps cleanly on narrow widths.
@@ -1005,6 +1019,17 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 >
                   <Brain className="w-3.5 h-3.5 mr-1.5" />
                   Research
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "cinematic")}
+                  className="h-8 px-3 rounded-lg bg-fuchsia-500/20 text-fuchsia-100 border border-fuchsia-500/40 hover:bg-fuchsia-500/30 disabled:opacity-50"
+                  title="Cinematic Magazine Engine — dark-magazine page with a real Kling 5s hero video + fal.ai stills (blog, landing, or homepage; ~4 min)."
+                >
+                  <Film className="w-3.5 h-3.5 mr-1.5" />
+                  Cinematic
                 </Button>
                 {isGenerating ? (
                   <Button
