@@ -10,6 +10,30 @@ import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
 import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
 import { buildAskTools } from "../ai/tools";
+import { buildAttachmentPromptBlock, type AttachmentPromptEntry } from "../services/attachments";
+
+// Inbound attachment shape from the chat composer. URLs are validated server-side
+// against R2_PUBLIC_DOMAIN before being injected into the prompt — never trust
+// arbitrary URLs from the client (an open-redirect-style prompt injection vector).
+interface InboundAttachment {
+  publicUrl: string;
+  kind: "image" | "video";
+  mimeType: string;
+  filename: string;
+}
+
+function isAllowedAttachmentUrl(url: string, allowedDomain: string): boolean {
+  if (!allowedDomain) return false;
+  try {
+    const u = new URL(url);
+    const allowed = new URL(allowedDomain);
+    // Require exact host match. Subdomain attacks (e.g. pub-xxx.r2.dev.evil.com)
+    // would mismatch on host so this is safe.
+    return u.protocol === "https:" && u.host === allowed.host;
+  } catch {
+    return false;
+  }
+}
 
 // Models that we've confirmed handle OpenAI-style tool calls reliably via
 // OpenRouter. Ask mode forces effectiveModel onto this list before passing
@@ -72,7 +96,15 @@ chatRouter.post("/:projectId", async (c) => {
 
     // 2. Parse Request
     const body = await c.req.json();
-    const { prompt, model = "moonshotai/kimi-k2.6", contextFiles, imageBase64, imagesBase64, mode: rawMode } = body;
+    const {
+      prompt,
+      model = "moonshotai/kimi-k2.6",
+      contextFiles,
+      imageBase64,
+      imagesBase64,
+      attachments: rawAttachments,
+      mode: rawMode,
+    } = body;
     // Support both multi-image array (imagesBase64) and legacy single (imageBase64)
     const imageList: string[] = imagesBase64 && Array.isArray(imagesBase64)
       ? imagesBase64.slice(0, 10) // cap at 10
@@ -80,6 +112,27 @@ chatRouter.post("/:projectId", async (c) => {
     // ASK vs BUILD mode. Default is "build" to preserve existing UX for any
     // client that doesn't send the field.
     const mode: "ask" | "build" = rawMode === "ask" ? "ask" : "build";
+
+    // Validate inbound R2-hosted attachments. We only trust URLs on the configured
+    // R2 public domain — anything else is dropped to prevent the model from being
+    // tricked into embedding attacker-controlled URLs. The vision-side imagesBase64
+    // path is separate and unaffected.
+    const inboundAttachments: InboundAttachment[] = Array.isArray(rawAttachments)
+      ? rawAttachments.slice(0, 10).filter(
+          (a: any): a is InboundAttachment =>
+            a &&
+            typeof a.publicUrl === "string" &&
+            (a.kind === "image" || a.kind === "video") &&
+            typeof a.mimeType === "string" &&
+            typeof a.filename === "string" &&
+            isAllowedAttachmentUrl(a.publicUrl, c.env.R2_PUBLIC_DOMAIN),
+        )
+      : [];
+    if (Array.isArray(rawAttachments) && rawAttachments.length !== inboundAttachments.length) {
+      console.warn(
+        `[Chat] Dropped ${rawAttachments.length - inboundAttachments.length} attachment(s) — failed URL/shape validation`,
+      );
+    }
 
     // 3. Verify project exists
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
@@ -166,10 +219,25 @@ chatRouter.post("/:projectId", async (c) => {
         ? ""
         : "\n      Remember: Reply ONLY in valid JSON. No markdown ticks, no extra text.\n    ";
 
+    // User-uploaded media (real estate agent photo, product shot, etc.) — these
+    // are hosted at R2 public URLs and the model MUST embed them verbatim. The
+    // helper produces the strong, opinionated block already in the codebase.
+    const attachmentPromptEntries: AttachmentPromptEntry[] = inboundAttachments.map((a) => ({
+      kind: a.kind,
+      mimeType: a.mimeType,
+      filename: a.filename,
+      publicUrl: a.publicUrl,
+    }));
+    const attachmentBlock =
+      attachmentPromptEntries.length > 0
+        ? `\n# USER ATTACHMENTS — EMBED THESE EXACT URLS\n${buildAttachmentPromptBlock(attachmentPromptEntries)}\n`
+        : "";
+
     const fullSystemPrompt = `
       ${basePrompt}
       ${memoryBlock}
       ${historyBlock}
+      ${attachmentBlock}
       ${contextBlock}${jsonTrailer}`;
 
     // 6. Return Streaming Server-Sent Events (SSE) Response

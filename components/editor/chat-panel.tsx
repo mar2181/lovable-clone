@@ -1,16 +1,34 @@
 "use client";
 
 import { useState, useRef, useEffect, useCallback } from "react";
-import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square } from "lucide-react";
+import { Send, Bot, Paperclip, Eye, MessageSquare, Hammer, Square, Loader2, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ModelSelector } from "@/components/editor/model-selector";
-import { ChatMessage, ChatMessageProps } from "@/components/editor/chat-message";
+import { ChatMessage, ChatMessageProps, ChatAttachment } from "@/components/editor/chat-message";
 import { GenerationProgress } from "@/components/editor/generation-progress";
 import { DEFAULT_MODEL, VISION_MODEL, AI_MODELS } from "@/lib/models";
 import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { parseStreamToJSON } from "@/lib/file-parser";
+import { uploadAttachment, type AttachmentUploadResult } from "@/lib/upload";
+
+// One thumbnail in the chat composer. Tracks both halves of the upload:
+//   • `dataUrl`  — compressed JPEG sent as vision context (so the model SEES it)
+//   • `publicUrl` — R2-hosted URL the AI can embed in the generated site
+// Until `status === "uploaded"`, `publicUrl` is undefined and the slot is
+// not eligible to be sent as an attachment.
+interface AttachmentSlot {
+  id: string;
+  dataUrl: string;
+  filename: string;
+  mimeType: string;
+  status: "uploading" | "uploaded" | "failed";
+  publicUrl?: string;
+  kind?: "image" | "video";
+  abort?: AbortController;
+  errorMessage?: string;
+}
 
 interface ChatPanelProps {
   projectId: string;
@@ -58,7 +76,8 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   const [messages, setMessages] = useState<ChatMessageProps[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [statusMessage, setStatusMessage] = useState("");
-  const [attachedImages, setAttachedImages] = useState<string[]>([]);
+  const [attachments, setAttachments] = useState<AttachmentSlot[]>([]);
+  const hasUploadingAttachment = attachments.some((s) => s.status === "uploading");
   const [previousModel, setPreviousModel] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -164,20 +183,29 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       reader.readAsDataURL(file);
     });
 
+  // Update a single slot in place by id. Used by both the upload-success and
+  // upload-failure callbacks, which fire asynchronously after the slot has
+  // already been rendered, so we can't rely on the slot's array index (the
+  // user may have added or removed others in the meantime).
+  const updateSlot = useCallback((id: string, patch: Partial<AttachmentSlot>) => {
+    setAttachments((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  }, []);
+
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
     if (!files.length) return;
 
-    const remaining = MAX_IMAGES - attachedImages.length;
+    const remaining = MAX_IMAGES - attachments.length;
     if (files.length > remaining) {
       alert(
-        `You already have ${attachedImages.length} attached. ${MAX_IMAGES} max — adding the first ${remaining}.`,
+        `You already have ${attachments.length} attached. ${MAX_IMAGES} max — adding the first ${remaining}.`,
       );
     }
     const toProcess = files.slice(0, remaining);
 
     const skipped: string[] = [];
-    const compressed: string[] = [];
+    const newSlots: Array<{ slot: AttachmentSlot; file: File }> = [];
+
     for (const file of toProcess) {
       if (file.size > MAX_RAW_BYTES) {
         skipped.push(`${file.name} (${(file.size / 1024 / 1024).toFixed(0)} MB)`);
@@ -185,17 +213,28 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
       }
       try {
         const dataUrl = await compressImage(file);
-        compressed.push(dataUrl);
+        const id = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        newSlots.push({
+          file,
+          slot: {
+            id,
+            dataUrl,
+            filename: file.name,
+            mimeType: file.type || "image/jpeg",
+            status: "uploading",
+            abort: new AbortController(),
+          },
+        });
       } catch (err) {
         console.error("compressImage failed:", err);
         skipped.push(`${file.name} (could not read)`);
       }
     }
 
-    if (compressed.length > 0) {
-      setAttachedImages((prev) => {
+    if (newSlots.length > 0) {
+      setAttachments((prev) => {
         const room = MAX_IMAGES - prev.length;
-        const next = [...prev, ...compressed.slice(0, room)];
+        const next = [...prev, ...newSlots.slice(0, room).map((n) => n.slot)];
         // Auto-switch to vision model once first image is attached
         if (prev.length === 0 && next.length > 0) {
           const currentModelInfo = AI_MODELS.find((m) => m.id === selectedModel);
@@ -206,6 +245,51 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
         }
         return next;
       });
+
+      // Fire the actual R2 uploads in parallel. Each completion patches its
+      // slot independently — order doesn't matter, and a failure here is
+      // non-fatal because the vision base64 still works for the model.
+      const room = MAX_IMAGES - attachments.length;
+      const tokenPromise = getToken();
+      for (const { slot, file } of newSlots.slice(0, room)) {
+        (async () => {
+          try {
+            const token = await tokenPromise;
+            if (!token) throw new Error("Not authenticated — refresh and try again.");
+            const result: AttachmentUploadResult = await uploadAttachment(
+              file,
+              projectId,
+              token,
+              () => {
+                // Per-file progress callback. We don't surface % in the UI
+                // (the file cap is 30 MB compressed → upload is sub-second on
+                // typical connections), but the callback is required by the
+                // helper signature.
+              },
+              slot.abort?.signal,
+            );
+            updateSlot(slot.id, {
+              status: "uploaded",
+              publicUrl: result.url,
+              kind: result.kind,
+              mimeType: result.mimeType,
+              abort: undefined,
+            });
+          } catch (err: any) {
+            // Aborts are user-initiated removals — leave the slot alone, it's
+            // already been spliced out of state.
+            if (err?.name === "AbortError" || /cancelled/i.test(err?.message || "")) {
+              return;
+            }
+            console.error("Attachment upload failed:", err);
+            updateSlot(slot.id, {
+              status: "failed",
+              errorMessage: err?.message || "Upload failed",
+              abort: undefined,
+            });
+          }
+        })();
+      }
     }
 
     if (skipped.length > 0) {
@@ -218,9 +302,13 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const removeAttachment = (index: number) => {
-    setAttachedImages(prev => {
-      const next = prev.filter((_, i) => i !== index);
+  const removeAttachment = (id: string) => {
+    setAttachments((prev) => {
+      const slot = prev.find((s) => s.id === id);
+      // Cancel the upload if still in flight so we don't waste bandwidth or
+      // leave an orphaned R2 object the user no longer wants.
+      if (slot?.status === "uploading") slot.abort?.abort();
+      const next = prev.filter((s) => s.id !== id);
       // Restore previous model if all images removed
       if (next.length === 0 && previousModel) {
         setSelectedModel(previousModel);
@@ -234,16 +322,50 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
   const handleSubmit = async (e: React.FormEvent, submitMode: "ask" | "build" = "build") => {
     e.preventDefault();
     if (!prompt.trim() || isGenerating) return;
+    // Guard against keyboard-Enter while an attachment is mid-upload. The
+    // buttons are visually disabled in this state, but keyboard shortcuts
+    // still fire — they need their own check.
+    if (attachments.some((s) => s.status === "uploading")) return;
 
     const userMessage = prompt;
-    const currentImages = [...attachedImages];
+    // Snapshot the slot list. We split it into two payloads:
+    //   • visionImages: every slot's compressed base64 — sent to the model as
+    //     vision input so it can SEE the photo (e.g. recognize a person, room,
+    //     style).
+    //   • hostedAttachments: only slots that finished uploading to R2 — these
+    //     are real, public URLs the AI can embed in the generated site.
+    // If an upload failed (or was still in flight at submit time — the Build
+    // button guards against this), the slot still contributes vision context
+    // but no asset URL.
+    const slotsSnapshot = [...attachments];
+    const visionImages = slotsSnapshot.map((s) => s.dataUrl);
+    const hostedAttachments = slotsSnapshot
+      .filter((s) => s.status === "uploaded" && s.publicUrl)
+      .map((s) => ({
+        publicUrl: s.publicUrl!,
+        kind: s.kind ?? "image",
+        mimeType: s.mimeType,
+        filename: s.filename,
+      }));
+    const userMessageAttachments: ChatAttachment[] = hostedAttachments.map((a) => ({
+      url: a.publicUrl,
+      kind: a.kind,
+      filename: a.filename,
+    }));
     // Capture mode for this submission. Used in the closure below and stable
     // across the streaming lifecycle (state changes during stream are fine).
     const currentMode = submitMode;
 
     setPrompt("");
-    setAttachedImages([]);
-    setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
+    setAttachments([]);
+    setMessages((prev) => [
+      ...prev,
+      {
+        role: "user",
+        content: userMessage,
+        attachments: userMessageAttachments.length > 0 ? userMessageAttachments : undefined,
+      },
+    ]);
     setIsGenerating(true);
     setStatusMessage(currentMode === "ask" ? "Thinking…" : "Connecting to AI…");
     rawAssistantResponseRef.current = "";
@@ -297,7 +419,8 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           prompt: userMessage,
           model: selectedModel,
           contextFiles: contextFiles,
-          imagesBase64: currentImages,
+          imagesBase64: visionImages,
+          attachments: hostedAttachments,
           mode: currentMode,
         }),
         async onopen() {
@@ -494,7 +617,7 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           </div>
         ) : (
           messages.map((msg, i) => (
-            <ChatMessage key={i} role={msg.role} content={msg.content} />
+            <ChatMessage key={i} role={msg.role} content={msg.content} attachments={msg.attachments} />
           ))
         )}
       </div>
@@ -533,14 +656,31 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
           />
 
           <div className="flex items-center justify-between mt-2 pt-2 border-t border-white/5 bg-transparent">
-            {attachedImages.length > 0 && (
+            {attachments.length > 0 && (
               <div className="mb-2 flex flex-wrap gap-2">
-                {attachedImages.map((img, idx) => (
-                  <div key={idx} className="relative inline-block">
-                    <img src={img} alt={`Attachment ${idx + 1}`} className="h-16 w-16 object-cover rounded-md border border-white/10" />
+                {attachments.map((slot) => (
+                  <div key={slot.id} className="relative inline-block" title={slot.filename}>
+                    <img
+                      src={slot.dataUrl}
+                      alt={slot.filename}
+                      className={`h-16 w-16 object-cover rounded-md border border-white/10 ${slot.status !== "uploaded" ? "opacity-60" : ""}`}
+                    />
+                    {slot.status === "uploading" && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/30 rounded-md">
+                        <Loader2 className="w-4 h-4 text-white animate-spin" />
+                      </div>
+                    )}
+                    {slot.status === "failed" && (
+                      <div
+                        className="absolute inset-0 flex items-center justify-center bg-red-900/60 rounded-md"
+                        title={slot.errorMessage || "Upload failed — vision only"}
+                      >
+                        <AlertCircle className="w-4 h-4 text-red-200" />
+                      </div>
+                    )}
                     <button
                       type="button"
-                      onClick={() => removeAttachment(idx)}
+                      onClick={() => removeAttachment(slot.id)}
                       className="absolute -top-2 -right-2 bg-zinc-800 text-white rounded-full p-0.5 border border-white/10 hover:bg-zinc-700"
                     >
                       <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M18 6L6 18M6 6l12 12"/></svg>
@@ -551,6 +691,18 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                   <div className="w-full flex items-center gap-1 text-[10px] text-blue-400">
                     <Eye className="w-3 h-3" />
                     <span>Vision model active</span>
+                  </div>
+                )}
+                {attachments.some((s) => s.status === "uploading") && (
+                  <div className="w-full flex items-center gap-1 text-[10px] text-zinc-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />
+                    <span>Uploading attachments… submit will unlock when done.</span>
+                  </div>
+                )}
+                {attachments.some((s) => s.status === "failed") && (
+                  <div className="w-full flex items-center gap-1 text-[10px] text-red-400">
+                    <AlertCircle className="w-3 h-3" />
+                    <span>One or more uploads failed. The AI can still SEE these images, but it can&apos;t embed them on the site.</span>
                   </div>
                 )}
               </div>
@@ -584,10 +736,10 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
               <Button
                 type="button"
                 size="sm"
-                disabled={!prompt.trim() || isGenerating}
+                disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
                 onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "ask")}
                 className="h-8 px-3 rounded-lg bg-zinc-800 text-white border border-white/10 hover:bg-zinc-700 disabled:opacity-50"
-                title="Discuss without making any code changes (Ctrl+Enter)"
+                title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Discuss without making any code changes (Ctrl+Enter)"}
               >
                 <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
                 Ask
@@ -607,9 +759,9 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
                 <Button
                   type="submit"
                   size="sm"
-                  disabled={!prompt.trim()}
+                  disabled={!prompt.trim() || hasUploadingAttachment}
                   className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                  title="Modify the code (Enter)"
+                  title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Modify the code (Enter)"}
                 >
                   <Hammer className="w-3.5 h-3.5 mr-1.5" />
                   Build
