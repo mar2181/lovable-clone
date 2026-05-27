@@ -2,14 +2,26 @@ import { tool, jsonSchema } from "ai";
 import type { Bindings } from "../index";
 
 const TAVILY_BASE = "https://api.tavily.com";
+const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape";
 
 const SEARCH_RESULT_BUDGET = 2 * 1024;
 const SEARCH_SNIPPET_CAP = 500;
 const FETCH_CONTENT_CAP = 50 * 1024;
+const SCRAPE_CONTENT_CAP = 80 * 1024;
 const QUERY_LENGTH_CAP = 400;
 
 type WebSearchInput = { query: string; max_results?: number };
 type WebFetchInput = { url: string };
+type WebScrapeInput = { url: string; only_main_content?: boolean };
+
+type FirecrawlScrapeResponse = {
+  success?: boolean;
+  data?: {
+    markdown?: string;
+    metadata?: { title?: string; statusCode?: number } & Record<string, unknown>;
+  };
+  error?: string;
+};
 
 type TavilySearchResult = {
   title?: string;
@@ -50,8 +62,9 @@ function packResultsToBudget(
   return out;
 }
 
-export function buildAskTools(env: Bindings) {
+export function buildTools(env: Bindings) {
   const apiKey = env.TAVILY_API_KEY || "";
+  const firecrawlKey = env.FIRECRAWL_API_KEY || "";
 
   const web_search = tool({
     description:
@@ -171,5 +184,69 @@ export function buildAskTools(env: Bindings) {
     },
   });
 
-  return { web_search, web_fetch };
+  const web_scrape = tool({
+    description:
+      "Scrape a full web page with JS rendering and return clean markdown. Use this when web_fetch isn't enough — SPAs, long pages, sites that block simple fetchers, or when you need the full structured copy of a page to clone or quote. Slower and more expensive than web_fetch; do not call for pages that web_search snippets already cover. Returns markdown (capped at ~80 KB).",
+    inputSchema: jsonSchema<WebScrapeInput>({
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Absolute http(s) URL of the page to scrape.",
+          format: "uri",
+        },
+        only_main_content: {
+          type: "boolean",
+          description: "Strip nav/footer/ads and return only the main content. Default true.",
+        },
+      },
+      required: ["url"],
+    }),
+    execute: async ({ url, only_main_content }) => {
+      if (!firecrawlKey) {
+        return { error: "web_scrape is unavailable: FIRECRAWL_API_KEY is not configured on the worker." };
+      }
+      const u = (url || "").trim();
+      if (!/^https?:\/\//i.test(u)) {
+        return { error: "URL must start with http:// or https://" };
+      }
+
+      try {
+        const resp = await fetch(FIRECRAWL_SCRAPE_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${firecrawlKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            url: u,
+            formats: ["markdown"],
+            onlyMainContent: only_main_content !== false,
+          }),
+        });
+
+        if (!resp.ok) {
+          const text = await resp.text().catch(() => "");
+          return {
+            error: `Firecrawl scrape failed: ${resp.status} ${resp.statusText} ${clampString(text, 200)}`,
+          };
+        }
+
+        const data = (await resp.json()) as FirecrawlScrapeResponse;
+        const markdown = (data.data?.markdown || "").trim();
+        if (!markdown) {
+          return { error: `No content scraped from ${u}.` };
+        }
+        return {
+          url: u,
+          title: data.data?.metadata?.title,
+          markdown: clampString(markdown, SCRAPE_CONTENT_CAP),
+        };
+      } catch (err: any) {
+        return { error: `web_scrape threw: ${err?.message || String(err)}` };
+      }
+    },
+  });
+
+  return { web_search, web_fetch, web_scrape };
 }

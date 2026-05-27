@@ -9,7 +9,7 @@ import { replaceImagePlaceholders } from "../services/image-gen";
 import { sanitizeGeneratedCode } from "../ai/code-sanitizer";
 import { streamText, stepCountIs } from "ai";
 import { createOpenAI } from "@ai-sdk/openai";
-import { buildAskTools } from "../ai/tools";
+import { buildTools } from "../ai/tools";
 import { buildAttachmentPromptBlock, type AttachmentPromptEntry } from "../services/attachments";
 
 // Inbound attachment shape from the chat composer. URLs are validated server-side
@@ -169,10 +169,13 @@ chatRouter.post("/:projectId", async (c) => {
       console.log(`${imageList.length} image(s) attached - auto-switching from ${model} to ${VISION_MODEL} for vision support`);
     }
 
-    // Ask mode wants real tool calls (web_search, web_fetch). If the user
-    // picked a model we haven't confirmed supports tool use, fall back to a
-    // known-good one. Build mode keeps whatever the user picked — no tools
-    // are passed there, so model choice doesn't matter for this concern.
+    // Ask mode wants real tool calls (web_search, web_fetch, web_scrape). If
+    // the user picked a model we haven't confirmed supports tool use, fall
+    // back to a known-good one — Ask without tools is useless.
+    // Build mode also supports tools now, but we DO NOT auto-switch the
+    // model: code-generation strength matters more than tool support there.
+    // If the user wants to scrape during Build, they pick a tool-capable
+    // model from the dropdown; otherwise the worker silently skips tools.
     if (mode === "ask" && !TOOL_CAPABLE_MODELS.has(effectiveModel)) {
       console.log(`[Chat] Ask mode: model "${effectiveModel}" not in tool-capable allowlist — switching to ${ASK_TOOL_FALLBACK_MODEL}`);
       effectiveModel = ASK_TOOL_FALLBACK_MODEL;
@@ -253,17 +256,22 @@ chatRouter.post("/:projectId", async (c) => {
           userContent.push({ type: "image", image: binary, mimeType });
         }
 
-        // Ask mode gets real tools (web_search + web_fetch). Build mode
-        // doesn't — it must emit a strict JSON envelope, and interleaving
-        // tool calls before that envelope would break the parser. stepCountIs
-        // caps a single Ask turn at 5 model/tool steps so a runaway prompt
-        // can't burn Tavily credits.
-        const askTools = mode === "ask" ? buildAskTools(c.env) : undefined;
+        // Both modes can now use tools (web_search, web_fetch, web_scrape).
+        // ASK mode always gets tools — its system prompt encourages them and
+        // the route forces a tool-capable model above when needed. BUILD mode
+        // only gets tools when the user's chosen model is in the tool-capable
+        // allowlist, so picking a code-strong-but-no-tools model (e.g. Kimi
+        // K2.6) still works exactly as before. stepCountIs caps a single turn
+        // at 5 model/tool steps so a runaway prompt can't drain Tavily or
+        // Firecrawl credit.
+        const toolsEnabled =
+          mode === "ask" || TOOL_CAPABLE_MODELS.has(effectiveModel);
+        const tools = toolsEnabled ? buildTools(c.env) : undefined;
         const result = await streamText({
           model: aiModel,
           system: fullSystemPrompt,
           messages: [{ role: "user", content: userContent }],
-          ...(askTools ? { tools: askTools, stopWhen: stepCountIs(5) } : {}),
+          ...(tools ? { tools, stopWhen: stepCountIs(5) } : {}),
         });
 
         let fullContent = "";
