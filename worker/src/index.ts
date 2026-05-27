@@ -15,6 +15,7 @@ import buildRouter from "./routes/build";
 import assetsRouter from "./routes/assets";
 import shareRouter from "./routes/share";
 import supabaseRouter from "./routes/supabase";
+import attachmentsRouter from "./routes/attachments";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -98,6 +99,7 @@ app.route("/api/assets", assetsRouter);
 app.route("/assets", assetsRouter);
 app.route("/api/share", shareRouter);
 app.route("/api/supabase", supabaseRouter);
+app.route("/api/attachments", attachmentsRouter);
 
 app.get("/", (c) => {
   return c.text("HS Solutions API is running!");
