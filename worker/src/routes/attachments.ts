@@ -65,8 +65,12 @@ attachmentsRouter.post("/", async (c) => {
     const r2Key = `attachments/${userId}/${projectId}/${id}.${ext}`;
     const kind = deriveKind(file.type);
 
-    // Stream to R2
-    await r2.put(r2Key, file.stream(), {
+    // Upload to R2. Pass the File (Blob) directly — passing file.stream()
+    // silently no-ops in the Workers runtime (PUT returns 200 but writes 0
+    // bytes; KV thinks the object exists, but a GET on the public URL 404s).
+    // Blob input lets R2 see the full content-length and write atomically.
+    const body = await file.arrayBuffer();
+    await r2.put(r2Key, body, {
       httpMetadata: { contentType: file.type },
       customMetadata: {
         userId,
