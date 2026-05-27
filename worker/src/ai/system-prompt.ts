@@ -573,24 +573,27 @@ You are explicitly NOT building a typical SaaS landing page:
 
 # Hero motion — REQUIRED on every cinematic page
 
-The hero MUST include a cinematic background video. Emit it as a single FAL_VIDEO marker:
+The hero MUST include a cinematic background video AND a matching poster still. Emit them as a single FAL_VIDEO marker (for the motion) plus a FAL_IMAGE marker on the \`poster\` attribute (for the first-frame still that shows immediately before the video loads, and that the dashboard uses as the project thumbnail):
 
 \`\`\`tsx
 <video
   autoPlay muted loop playsInline
   className="absolute inset-0 w-full h-full object-cover"
+  poster="FAL_IMAGE[same scene as the hero video, single dramatic still frame, {SUBJECT}, {SETTING}, late afternoon golden hour light, professional commercial photography, no text, no people, no logos, 4k]"
   src="FAL_VIDEO[cinematic slow dolly-in toward a {SUBJECT}, {SETTING}, late afternoon golden hour light, professional commercial photography, no text, no people, 4k cinematic]"
 />
 \`\`\`
 
-The worker resolves this to a 5-second 16:9 mp4 via fal.ai Kling text-to-video AFTER your JSON is parsed. Write a DETAILED, concrete prompt — name the subject, name the setting, name the light. Generic prompts produce generic video. Include: subject + color, setting/world, light/time of day, camera move (almost always "slow dolly-in" or "slow camera push"), and the style anchors: "professional commercial photography", "no text, no people", "4k cinematic".
+**Important ordering:** put \`poster\` BEFORE \`src\` in the JSX. The thumbnail extractor scans top-down and picks the first image URL it finds in Hero.tsx — keeping poster first guarantees the dashboard tile shows the still image, not a broken video preview.
+
+The worker resolves the FAL_VIDEO to a 5-second 16:9 mp4 via fal.ai Kling text-to-video AFTER your JSON is parsed (takes 2-10 min). The FAL_IMAGE poster runs in parallel via fal Flux Pro (~15s). Write a DETAILED, concrete prompt for each — name the subject, name the setting, name the light. The poster should describe the SAME scene as the video so the hero feels coherent when the still flips to motion.
 
 Examples of strong FAL_VIDEO descriptions:
 - "cinematic slow dolly-in toward a green sport scooter on a wooden boardwalk, tropical island backdrop with palm trees and turquoise water, late afternoon golden hour, subtle heat shimmer, professional automotive commercial photography, no text, no people, 4k cinematic"
 - "cinematic slow push past a luxury modern kitchen with marble waterfall island, warm pendant lighting, golden hour sun streaming through floor-to-ceiling windows, professional architectural photography, no text, no people, 4k cinematic"
 - "cinematic slow aerial pull-back over a tropical resort pool at golden hour, palm shadows on turquoise water, professional travel photography, no text, no people, 4k cinematic"
 
-ONE FAL_VIDEO per page (the hero only). Section visuals use FAL_IMAGE.
+ONE FAL_VIDEO per page (the hero only). ONE FAL_IMAGE for the poster (must match the video scene). Other section visuals use FAL_IMAGE freely.
 
 # Section visuals — use FAL_IMAGE markers
 

@@ -12,7 +12,10 @@ function isPageFile(path: string): boolean {
 }
 
 // A URL points at a usable image when it has an image extension or sits under
-// an /assets/ path. Font and CDN URLs are excluded so they can't win.
+// an /assets/ path. Font, CDN, and video URLs are excluded so they can't win
+// — cinematic projects store hero MP4s under /assets/ alongside JPGs, so the
+// extension filter is critical: a video URL would otherwise pass the
+// /assets/ test and end up as the dashboard thumbnail (broken).
 function imageUrlsIn(content: string): string[] {
   const all = content.match(/https?:\/\/[^\s"'`)\]}]+/g) || [];
   return all.filter((url) => {
@@ -25,6 +28,7 @@ function imageUrlsIn(content: string): string[] {
     ) {
       return false;
     }
+    if (/\.(mp4|webm|mov|m4v|avi)(\?|$)/i.test(lower)) return false;
     return /\.(jpe?g|png|webp|gif|avif)(\?|$)/i.test(url) || url.includes("/assets/");
   });
 }
