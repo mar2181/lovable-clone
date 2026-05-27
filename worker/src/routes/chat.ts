@@ -2,7 +2,14 @@ import { Hono } from "hono";
 import { streamSSE } from "hono/streaming";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
-import { SCAFFOLD_PROMPT, ITERATION_PROMPT, ASK_PROMPT } from "../ai/system-prompt";
+import {
+  SCAFFOLD_PROMPT,
+  ITERATION_PROMPT,
+  ASK_PROMPT,
+  RESEARCH_PROMPT,
+  TASTE_RULES,
+  STRATEGY_SOURCE_OF_TRUTH,
+} from "../ai/system-prompt";
 import { parseStreamToJSON } from "../ai/file-parser";
 import { hasEnoughCredits, deductCredit } from "../services/credits";
 import { replaceImagePlaceholders } from "../services/image-gen";
@@ -49,6 +56,18 @@ const TOOL_CAPABLE_MODELS = new Set<string>([
   "anthropic/claude-opus-4",
 ]);
 const ASK_TOOL_FALLBACK_MODEL = "openai/gpt-4.1";
+
+// Research mode runs the Outlier Engine workflow: ~20 tool calls, long reasoning
+// between them. Claude Sonnet is the best balance of tool-use reliability and
+// long-context coherence at our budget — force it regardless of the user's
+// dropdown pick. (Kimi K2.6 in particular cannot drive this workflow.)
+const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-4";
+
+// Step cap. Build/Ask use a tight cap so a runaway prompt can't drain Tavily
+// or Firecrawl credit. Research mode legitimately needs many more steps —
+// the workflow does ~8 web_search + ~12 web_scrape + reasoning steps.
+const STEP_CAP_DEFAULT = 5;
+const STEP_CAP_RESEARCH = 30;
 
 const chatRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -109,9 +128,14 @@ chatRouter.post("/:projectId", async (c) => {
     const imageList: string[] = imagesBase64 && Array.isArray(imagesBase64)
       ? imagesBase64.slice(0, 10) // cap at 10
       : imageBase64 ? [imageBase64] : [];
-    // ASK vs BUILD mode. Default is "build" to preserve existing UX for any
-    // client that doesn't send the field.
-    const mode: "ask" | "build" = rawMode === "ask" ? "ask" : "build";
+    // Mode discriminator on the chat request.
+    //   "ask"      — conversational, no file writes, prose response. Tools enabled.
+    //   "build"    — default. Generates files. JSON envelope. Tools optional (model-gated).
+    //   "research" — runs the Outlier Engine workflow. Tools always on, step cap raised,
+    //                model forced to Claude Sonnet. Produces /src/pages/Strategy.tsx +
+    //                a strategy_digest field that gets stashed to KV.
+    const mode: "ask" | "build" | "research" =
+      rawMode === "ask" ? "ask" : rawMode === "research" ? "research" : "build";
 
     // Validate inbound R2-hosted attachments. We only trust URLs on the configured
     // R2 public domain — anything else is dropped to prevent the model from being
@@ -153,6 +177,16 @@ chatRouter.post("/:projectId", async (c) => {
     const chatHistoryStr = await kv.get(`project:${projectId}:chat_history`);
     const chatHistory: Array<{ role: string; summary: string }> = chatHistoryStr ? JSON.parse(chatHistoryStr) : [];
 
+    // 3.6 Load taste + strategy state.
+    //   - taste_enabled: per-project flag for the design-taste layer. Default ON
+    //     (treat null and "true" the same; only "false" disables it).
+    //   - strategy_digest: 3–5 KB executive summary written by a prior research-mode
+    //     run. When present, it gets prepended to BUILD prompts as the
+    //     source-of-truth block so the model can never drift from the researched plan.
+    const tasteEnabledStr = await kv.get(`project:${projectId}:taste_enabled`);
+    const tasteEnabled = tasteEnabledStr !== "false";
+    const strategyDigest = (await kv.get(`project:${projectId}:strategy_digest`)) || "";
+
     // 4. Initialize OpenRouter (OpenAI-compatible API)
     const openrouter = createOpenAI({
       apiKey: c.env.OPENROUTER_API_KEY,
@@ -181,20 +215,32 @@ chatRouter.post("/:projectId", async (c) => {
       effectiveModel = ASK_TOOL_FALLBACK_MODEL;
     }
 
+    // Research mode always forces a tool-capable, long-context model. The
+    // Outlier Engine workflow is tool-heavy (8+ web_search calls, 12+ scrapes,
+    // reasoning steps between them) and the user's dropdown pick is irrelevant
+    // here — we need Claude Sonnet specifically for this turn.
+    if (mode === "research") {
+      if (effectiveModel !== RESEARCH_FORCED_MODEL) {
+        console.log(`[Chat] Research mode: forcing model "${effectiveModel}" → ${RESEARCH_FORCED_MODEL}`);
+        effectiveModel = RESEARCH_FORCED_MODEL;
+      }
+    }
+
     // Model ID comes from frontend (or auto-switched for vision/tools)
     const aiModel = openrouter(effectiveModel);
 
-    // 5. Pick the system prompt. ASK mode short-circuits the SCAFFOLD/ITERATION
-    // selection — it always uses ASK_PROMPT regardless of whether the project
-    // is fresh.
+    // 5. Pick the system prompt. ASK and RESEARCH short-circuit the
+    // SCAFFOLD/ITERATION selection — they each have a dedicated prompt.
     const basePrompt =
       mode === "ask"
         ? ASK_PROMPT
-        : isFirstPrompt
-          ? SCAFFOLD_PROMPT
-          : ITERATION_PROMPT;
+        : mode === "research"
+          ? RESEARCH_PROMPT
+          : isFirstPrompt
+            ? SCAFFOLD_PROMPT
+            : ITERATION_PROMPT;
     console.log(
-      `[Chat] project=${projectId} requestMode=${mode} buildMode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"}`,
+      `[Chat] project=${projectId} requestMode=${mode} buildMode=${isFirstPrompt ? "SCAFFOLD" : "ITERATION"} latest_version=${latestVersionStr || "(none)"} taste=${tasteEnabled ? "on" : "off"} strategy=${strategyDigest ? "present" : "none"}`,
     );
 
     // 5.1 Construct full system prompt with memory, history, and context
@@ -236,8 +282,23 @@ chatRouter.post("/:projectId", async (c) => {
         ? `\n# USER ATTACHMENTS — EMBED THESE EXACT URLS\n${buildAttachmentPromptBlock(attachmentPromptEntries)}\n`
         : "";
 
+    // Taste rules apply to BUILD mode only. ASK is conversational (no code) so
+    // the design-taste rules are noise there. RESEARCH already bakes its own
+    // workflow into its prompt and shouldn't be biased by taste rules — the
+    // researched data is the source of truth, not the taste defaults.
+    const tasteBlock =
+      mode === "build" && tasteEnabled ? `\n${TASTE_RULES}\n` : "";
+
+    // Strategy source-of-truth: prepend the digest to BUILD prompts when a
+    // prior research run wrote one. Honors the digest on every subsequent edit
+    // without the user having to remind the pet.
+    const strategyBlock =
+      mode === "build" && strategyDigest ? `\n${STRATEGY_SOURCE_OF_TRUTH(strategyDigest)}\n` : "";
+
     const fullSystemPrompt = `
       ${basePrompt}
+      ${tasteBlock}
+      ${strategyBlock}
       ${memoryBlock}
       ${historyBlock}
       ${attachmentBlock}
@@ -256,33 +317,71 @@ chatRouter.post("/:projectId", async (c) => {
           userContent.push({ type: "image", image: binary, mimeType });
         }
 
-        // Both modes can now use tools (web_search, web_fetch, web_scrape).
-        // ASK mode always gets tools — its system prompt encourages them and
-        // the route forces a tool-capable model above when needed. BUILD mode
-        // only gets tools when the user's chosen model is in the tool-capable
-        // allowlist, so picking a code-strong-but-no-tools model (e.g. Kimi
-        // K2.6) still works exactly as before. stepCountIs caps a single turn
-        // at 5 model/tool steps so a runaway prompt can't drain Tavily or
-        // Firecrawl credit.
+        // Tool gating:
+        //   - ASK / RESEARCH always get tools (their system prompts depend on them).
+        //   - BUILD gets tools only when the user's chosen model is in the
+        //     tool-capable allowlist — picking a code-strong-but-no-tools model
+        //     (e.g. Kimi K2.6) still works exactly as before.
         const toolsEnabled =
-          mode === "ask" || TOOL_CAPABLE_MODELS.has(effectiveModel);
+          mode === "ask" ||
+          mode === "research" ||
+          TOOL_CAPABLE_MODELS.has(effectiveModel);
         const tools = toolsEnabled ? buildTools(c.env) : undefined;
+        const stepCap = mode === "research" ? STEP_CAP_RESEARCH : STEP_CAP_DEFAULT;
         const result = await streamText({
           model: aiModel,
           system: fullSystemPrompt,
           messages: [{ role: "user", content: userContent }],
-          ...(tools ? { tools, stopWhen: stepCountIs(5) } : {}),
+          ...(tools ? { tools, stopWhen: stepCountIs(stepCap) } : {}),
         });
 
         let fullContent = "";
 
-        // Stream chunks to the client as they arrive
-        for await (const textPart of result.textStream) {
-          fullContent += textPart;
-          await stream.writeSSE({
-            data: JSON.stringify({ type: "chunk", content: textPart }),
-            event: "message",
-          });
+        // Stream events to the client. We use fullStream (not textStream) so we
+        // can also surface tool-call heartbeats — research mode in particular
+        // can run for 3+ minutes between text deltas, and a silent stream looks
+        // like a hang. text-delta parts still accumulate into fullContent for
+        // the JSON parse downstream; tool-call/tool-result parts emit as
+        // separate SSE chunks (decorative — frontend renders them in the bubble
+        // but they are NOT part of fullContent so they don't break JSON parsing).
+        const truncate = (s: string, n: number) =>
+          s.length > n ? s.slice(0, n) + "…" : s;
+        for await (const part of result.fullStream) {
+          const partType = (part as any).type;
+          if (partType === "text-delta") {
+            // AI SDK v6 exposes the delta on `.text` (older versions used `.textDelta`).
+            const text = (part as any).text ?? (part as any).textDelta ?? "";
+            if (!text) continue;
+            fullContent += text;
+            await stream.writeSSE({
+              data: JSON.stringify({ type: "chunk", content: text }),
+              event: "message",
+            });
+          } else if (partType === "tool-call") {
+            const toolName = (part as any).toolName ?? "tool";
+            const input = (part as any).input ?? (part as any).args ?? {};
+            const icon = toolName === "web_search" ? "🔎" : toolName === "web_scrape" ? "📄" : "🛠";
+            const arg =
+              (input && (input.query || input.url)) ||
+              JSON.stringify(input).slice(0, 80);
+            const heartbeat = `\n${icon} ${toolName}(${truncate(String(arg), 80)})…\n`;
+            await stream.writeSSE({
+              data: JSON.stringify({ type: "tool", content: heartbeat, toolName }),
+              event: "message",
+            });
+          } else if (partType === "tool-result") {
+            // Optional: a brief ack so the user knows the call finished.
+            const toolName = (part as any).toolName ?? "tool";
+            await stream.writeSSE({
+              data: JSON.stringify({ type: "tool", content: `✓ ${toolName} returned\n`, toolName }),
+              event: "message",
+            });
+          } else if (partType === "error") {
+            // Let the outer try/catch surface this — re-throw via the stream.
+            const err = (part as any).error;
+            throw err instanceof Error ? err : new Error(String(err));
+          }
+          // Ignore other part types (start-step, finish-step, finish, etc.)
         }
 
         // 6.5 Detect upstream model failure.
@@ -334,6 +433,26 @@ chatRouter.post("/:projectId", async (c) => {
 
         // 7. Parse final completed JSON
         const modifiedFiles = parseStreamToJSON(fullContent);
+
+        // 7.1 Research mode: pull the top-level strategy_digest field out of
+        // the envelope and stash it to KV. Subsequent BUILD turns inject this
+        // back into the system prompt as STRATEGY SOURCE-OF-TRUTH so the
+        // model can't drift from the researched plan. Failure to find a digest
+        // is non-fatal — we still ship the /src/pages/Strategy.tsx file the
+        // model produced, but downstream BUILD turns won't have the digest
+        // shortcut (they'd have to re-read the full Strategy.tsx every time).
+        let researchDigestSaved = false;
+        if (mode === "research" && modifiedFiles) {
+          const rawDigest = (modifiedFiles as any).strategy_digest;
+          if (typeof rawDigest === "string" && rawDigest.trim().length > 0) {
+            const digest = rawDigest.trim().slice(0, 8 * 1024); // hard 8 KB cap
+            await kv.put(`project:${projectId}:strategy_digest`, digest);
+            researchDigestSaved = true;
+            console.log(`[Chat] research mode: saved strategy_digest (${digest.length} bytes) for project=${projectId}`);
+          } else {
+            console.warn(`[Chat] research mode: no strategy_digest in envelope — skipping KV write`);
+          }
+        }
 
         if (!modifiedFiles || !modifiedFiles.files || Object.keys(modifiedFiles.files).length === 0) {
           // Three distinct upstream conditions land here. Classify and log them
@@ -424,13 +543,28 @@ chatRouter.post("/:projectId", async (c) => {
         // 10.5 Deduct Credit
         await deductCredit(userId, 1, kv);
 
-        // 11. Send Completion Event
+        // 11. Send Completion Event.
+        //
+        //   strategyGateAvailable — true when this was the FIRST successful
+        //   build for the project (SCAFFOLD) AND no prior research has been
+        //   run. The frontend reads this flag and renders the inline "Run
+        //   strategy first?" gate inside the first assistant bubble.
+        //
+        //   strategyDocExists — true whenever the project has a strategy_digest
+        //   in KV. The frontend uses this to gate the 📋 Strategy header pill.
+        //   After a research turn, the just-written digest counts.
+        const strategyGateAvailable =
+          mode === "build" && isFirstPrompt && !strategyDigest;
+        const strategyDocExists = Boolean(strategyDigest) || researchDigestSaved;
         await stream.writeSSE({
           data: JSON.stringify({
             type: "done",
             version: newVersionNum,
             files: mergedFiles,
-            dependencies: modifiedFiles.dependencies
+            dependencies: modifiedFiles.dependencies,
+            mode,
+            strategyGateAvailable,
+            strategyDocExists,
           }),
           event: "message",
         });

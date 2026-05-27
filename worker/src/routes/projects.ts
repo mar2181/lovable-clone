@@ -195,9 +195,13 @@ projectsRouter.post("/", async (c) => {
     };
     
     await r2.put(`${projectId}/v1.json`, JSON.stringify(initialVersionData));
-    
+
     // Update latest version pointer in KV
     await kv.put(`project:${projectId}:latest_version`, "1");
+
+    // Taste-skill layer is ON by default for every new project. Per-project
+    // toggle lives at the 🎨 Taste pill in the chat panel header.
+    await kv.put(`project:${projectId}:taste_enabled`, "true");
 
     return c.json({ project, version: 1 }, 201);
   } catch (error) {
@@ -258,6 +262,14 @@ projectsRouter.delete("/:id", async (c) => {
       await kv.delete(`project:${projectId}:supabase_migrations`);
     } catch (err: any) {
       console.error(`[Projects] Supabase cascade-unlink failed: ${err?.message || "unknown"}`);
+    }
+
+    // Cascade-delete taste + strategy state (no orphan KV after project removal).
+    try {
+      await kv.delete(`project:${projectId}:taste_enabled`);
+      await kv.delete(`project:${projectId}:strategy_digest`);
+    } catch (err: any) {
+      console.error(`[Projects] Taste/strategy cascade-delete failed: ${err?.message || "unknown"}`);
     }
 
     // ── Cascade-delete attachments ──────────────────────────────────────────────
@@ -455,6 +467,72 @@ projectsRouter.post("/:id/inline-edits", async (c) => {
   } catch (error: any) {
     console.error("[InlineEdits] failed:", error?.message || error);
     return c.json({ error: "Failed to apply inline edits" }, 500);
+  }
+});
+
+// ── Taste-skill toggle ───────────────────────────────────────────────────────
+// GET  /:id/taste  → { enabled: boolean }
+// PUT  /:id/taste  → body { enabled: boolean } → { enabled: boolean }
+//
+// Drives the 🎨 Taste pill in chat-panel.tsx. The flag is consumed by chat.ts
+// before every build turn — when "true" (default), TASTE_RULES gets appended
+// to the system prompt; when "false", scaffolds run without the design-taste
+// bias (useful for power users with their own design system).
+projectsRouter.get("/:id/taste", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  try {
+    const projStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projStr) return c.json({ error: "Project not found" }, 404);
+    const flag = await kv.get(`project:${projectId}:taste_enabled`);
+    // Default ON — null means the project was created before this feature
+    // shipped OR the init write failed; either way we treat it as enabled.
+    const enabled = flag !== "false";
+    return c.json({ enabled });
+  } catch (error: any) {
+    console.error("[Projects] GET taste failed:", error?.message || error);
+    return c.json({ error: "Failed to read taste flag" }, 500);
+  }
+});
+
+projectsRouter.put("/:id/taste", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  try {
+    const projStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projStr) return c.json({ error: "Project not found" }, 404);
+    const body = await c.req.json().catch(() => null);
+    if (!body || typeof body.enabled !== "boolean") {
+      return c.json({ error: "Body must include enabled:boolean" }, 400);
+    }
+    await kv.put(`project:${projectId}:taste_enabled`, body.enabled ? "true" : "false");
+    return c.json({ enabled: body.enabled });
+  } catch (error: any) {
+    console.error("[Projects] PUT taste failed:", error?.message || error);
+    return c.json({ error: "Failed to update taste flag" }, 500);
+  }
+});
+
+// ── Strategy digest (read-only — written by the chat route research mode) ────
+// GET /:id/strategy → { exists: boolean, digest?: string }
+//
+// Drives the 📋 Strategy pill in chat-panel.tsx (visibility = exists) and the
+// strategy-drawer copy. The digest itself is small enough to ship inline.
+projectsRouter.get("/:id/strategy", async (c) => {
+  const userId = c.get("userId");
+  const projectId = c.req.param("id");
+  const kv = c.env.KV_METADATA;
+  try {
+    const projStr = await kv.get(`user:${userId}:project:${projectId}`);
+    if (!projStr) return c.json({ error: "Project not found" }, 404);
+    const digest = await kv.get(`project:${projectId}:strategy_digest`);
+    if (!digest) return c.json({ exists: false });
+    return c.json({ exists: true, digest });
+  } catch (error: any) {
+    console.error("[Projects] GET strategy failed:", error?.message || error);
+    return c.json({ error: "Failed to read strategy" }, 500);
   }
 });
 
