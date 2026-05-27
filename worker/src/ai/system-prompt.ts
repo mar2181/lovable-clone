@@ -638,6 +638,8 @@ export const BRAND = {
 If a "# STRATEGY SOURCE-OF-TRUTH" block appears earlier in this prompt, treat its niche-specific structure and copy beats as MANDATORY. The strategy was researched from the actual top sites in the niche and overrides any defaults in this prompt where they conflict.
 
 # Critical reminders
+- **NO web tools.** Do NOT call web_search, web_fetch, or web_scrape. No tools are available to you in this mode. Draft directly from the user's prompt. The cinematic page is a from-scratch design; you do NOT need to look up the business, verify facts, or research the niche.
+- **Your FIRST output token MUST be \`{\`.** No preamble, no "I'll start by...", no narration about searching. Go straight to the JSON envelope.
 - Pick ONE shape (BLOG / LANDING / HOMEPAGE) up front and commit. Don't mix.
 - EXACTLY ONE FAL_VIDEO marker (the hero). More than one will time out the request.
 - Honor taste-skill rules if a "# Design Taste" block is also injected (it usually is).

@@ -355,17 +355,17 @@ chatRouter.post("/:projectId", async (c) => {
 
         // Tool gating:
         //   - ASK / RESEARCH always get tools (their system prompts depend on them).
-        //   - CINEMATIC gets tools too — Sonnet is forced and the model may
-        //     want to peek at a reference site if the user names one. The
-        //     prompt itself doesn't require tool use; this is opt-in.
+        //   - CINEMATIC explicitly DOES NOT get tools. Sonnet is too eager
+        //     about calling web_search on any named business or place, then
+        //     loops on tool calls and never produces JSON. The cinematic
+        //     prompt is designed to draft from the user's prompt alone.
         //   - BUILD gets tools only when the user's chosen model is in the
         //     tool-capable allowlist — picking a code-strong-but-no-tools model
         //     (e.g. Kimi K2.6) still works exactly as before.
         const toolsEnabled =
           mode === "ask" ||
           mode === "research" ||
-          mode === "cinematic" ||
-          TOOL_CAPABLE_MODELS.has(effectiveModel);
+          (mode === "build" && TOOL_CAPABLE_MODELS.has(effectiveModel));
         const tools = toolsEnabled ? buildTools(c.env) : undefined;
         const stepCap =
           mode === "research"
