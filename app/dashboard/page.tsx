@@ -1,5 +1,6 @@
 import { ProjectList } from "@/components/dashboard/project-list";
 import { CreateProjectDialog } from "@/components/dashboard/create-project-dialog";
+import { ImportGithubDialog } from "@/components/dashboard/import-github-dialog";
 import { TemplatePicker } from "@/components/dashboard/template-picker";
 
 export default function DashboardPage() {
@@ -12,6 +13,7 @@ export default function DashboardPage() {
         </div>
         <div className="flex items-center gap-3">
           <TemplatePicker />
+          <ImportGithubDialog />
           <CreateProjectDialog />
         </div>
       </div>

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { nanoid } from "nanoid";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
 import type { SupabaseLinkRecord } from "../types/supabase";
@@ -6,6 +7,40 @@ import type { SupabaseLinkRecord } from "../types/supabase";
 const githubRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 githubRouter.use("*", authMiddleware);
+
+// Parse a GitHub repo reference from the many shapes a user might paste:
+//   owner/repo
+//   https://github.com/owner/repo(.git)
+//   https://github.com/owner/repo/tree/<branch>
+//   git@github.com:owner/repo.git
+function parseRepoUrl(
+  input: string,
+): { owner: string; repo: string; branch?: string } | null {
+  const s = input.trim();
+
+  // "owner/repo" shorthand (no protocol, no scp-style "@")
+  if (!s.includes("://") && !s.includes("@")) {
+    const shorthand = /^([\w.-]+)\/([\w.-]+?)(?:\.git)?$/.exec(s);
+    if (shorthand) return { owner: shorthand[1], repo: shorthand[2] };
+  }
+
+  const normalized = s.replace(/^git@github\.com:/i, "https://github.com/");
+  try {
+    const u = new URL(normalized);
+    if (!/(^|\.)github\.com$/i.test(u.hostname)) return null;
+    const parts = u.pathname.replace(/^\/+/, "").split("/").filter(Boolean);
+    if (parts.length < 2) return null;
+    const owner = parts[0];
+    const repo = parts[1].replace(/\.git$/i, "");
+    let branch: string | undefined;
+    if (parts[2] === "tree" && parts[3]) {
+      branch = decodeURIComponent(parts.slice(3).join("/"));
+    }
+    return { owner, repo, branch };
+  } catch {
+    return null;
+  }
+}
 
 githubRouter.post("/push", async (c) => {
   const userId = c.get("userId");
@@ -137,6 +172,216 @@ githubRouter.post("/push", async (c) => {
   } catch (error) {
     console.error("GitHub push error:", error);
     return c.json({ error: "Failed to push to GitHub" }, 500);
+  }
+});
+
+// ── Import an existing GitHub repo as a NEW editable project ──────────────────
+// Mirrors POST /api/projects: writes KV metadata + an R2 v1.json holding the
+// repo's text files as the { "/path": content } map Sandpack/Monaco expect.
+// Inverse of /push: /push base64-encodes files OUT; /import base64-decodes IN.
+githubRouter.post("/import", async (c) => {
+  const userId = c.get("userId");
+  const kv = c.env.KV_METADATA;
+  const r2 = c.env.R2_PROJECTS;
+  const githubToken = c.env.GITHUB_PAT;
+
+  if (!githubToken) {
+    return c.json({ error: "GitHub PAT not configured on the server" }, 500);
+  }
+
+  const gh = (path: string) =>
+    fetch(`https://api.github.com${path}`, {
+      headers: {
+        Authorization: `Bearer ${githubToken}`,
+        Accept: "application/vnd.github+json",
+        "User-Agent": "lovable-clone",
+      },
+    });
+
+  try {
+    const { repoUrl, branch } = (await c.req.json()) as {
+      repoUrl?: string;
+      branch?: string;
+    };
+
+    if (!repoUrl || typeof repoUrl !== "string") {
+      return c.json({ error: "Missing repoUrl" }, 400);
+    }
+
+    const parsed = parseRepoUrl(repoUrl);
+    if (!parsed) {
+      return c.json(
+        { error: "Could not read a GitHub owner/repo from that URL." },
+        400,
+      );
+    }
+    const { owner, repo } = parsed;
+    let ref = (branch && branch.trim()) || parsed.branch;
+
+    // Resolve the default branch when none was specified.
+    const repoRes = await gh(`/repos/${owner}/${repo}`);
+    if (repoRes.status === 404) {
+      return c.json(
+        {
+          error:
+            "Repo not found, or the server's GitHub token can't see it. Check the URL and that the PAT has access.",
+        },
+        404,
+      );
+    }
+    if (!repoRes.ok) {
+      return c.json(
+        { error: `GitHub error fetching repo (${repoRes.status}).` },
+        502,
+      );
+    }
+    const repoInfo = (await repoRes.json()) as {
+      default_branch: string;
+      name: string;
+    };
+    if (!ref) ref = repoInfo.default_branch;
+
+    // One call gets the whole file tree for the branch.
+    const treeRes = await gh(
+      `/repos/${owner}/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`,
+    );
+    if (!treeRes.ok) {
+      return c.json(
+        { error: `Could not read branch "${ref}" (${treeRes.status}).` },
+        502,
+      );
+    }
+    const tree = (await treeRes.json()) as {
+      tree: { path: string; type: string; sha: string; size?: number }[];
+      truncated?: boolean;
+    };
+
+    // Limits keep us inside Workers subrequest budgets and R2/Sandpack sanity.
+    const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
+    const MAX_FILES = 200;
+    const MAX_TOTAL_BYTES = 6 * 1024 * 1024; // 6 MB total
+
+    const SKIP_DIRS =
+      /(^|\/)(node_modules|\.git|\.next|dist|build|out|\.turbo|\.vercel|coverage|\.cache|vendor)\//;
+    const BINARY_EXT =
+      /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svg|mp4|mov|webm|mp3|wav|ogg|flac|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|tar|rar|7z|exe|dll|so|dylib|wasm|bin|class|jar|psd|sketch|fig|node|map)$/i;
+    const SKIP_FILES =
+      /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb)$/;
+
+    const blobs = tree.tree.filter((n) => n.type === "blob");
+    const skipped: string[] = [];
+    const selected: typeof blobs = [];
+    let runningTotal = 0;
+
+    for (const n of blobs) {
+      const slashed = "/" + n.path;
+      if (
+        SKIP_DIRS.test(slashed) ||
+        BINARY_EXT.test(n.path) ||
+        SKIP_FILES.test(n.path)
+      ) {
+        skipped.push(n.path);
+        continue;
+      }
+      if ((n.size ?? 0) > MAX_FILE_BYTES) {
+        skipped.push(`${n.path} (too large)`);
+        continue;
+      }
+      if (selected.length >= MAX_FILES) {
+        skipped.push(`${n.path} (file cap)`);
+        continue;
+      }
+      if (runningTotal + (n.size ?? 0) > MAX_TOTAL_BYTES) {
+        skipped.push(`${n.path} (size cap)`);
+        continue;
+      }
+      selected.push(n);
+      runningTotal += n.size ?? 0;
+    }
+
+    if (selected.length === 0) {
+      return c.json(
+        { error: "No importable text files were found in that repo." },
+        400,
+      );
+    }
+
+    // Fetch each blob (base64) and decode to UTF-8 — inverse of the /push encoder.
+    const files: Record<string, string> = {};
+    const failed: string[] = [];
+    for (const n of selected) {
+      try {
+        const blobRes = await gh(`/repos/${owner}/${repo}/git/blobs/${n.sha}`);
+        if (!blobRes.ok) {
+          failed.push(n.path);
+          continue;
+        }
+        const blob = (await blobRes.json()) as {
+          content: string;
+          encoding: string;
+        };
+        if (blob.encoding !== "base64") {
+          failed.push(n.path);
+          continue;
+        }
+        const decoded = decodeURIComponent(
+          escape(atob(blob.content.replace(/\n/g, ""))),
+        );
+        files["/" + n.path] = decoded;
+      } catch {
+        failed.push(n.path);
+      }
+    }
+
+    if (Object.keys(files).length === 0) {
+      return c.json(
+        { error: "Failed to download any files from that repo." },
+        502,
+      );
+    }
+
+    // Create the project exactly like POST /api/projects does.
+    const projectId = nanoid(10);
+    const now = new Date().toISOString();
+    const project = {
+      id: projectId,
+      userId,
+      name: repoInfo.name || repo,
+      description: `Imported from ${owner}/${repo}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
+
+    const initialVersionData = {
+      version: 1,
+      createdAt: now,
+      prompt: `Imported from https://github.com/${owner}/${repo} (${ref})`,
+      files,
+    };
+    await r2.put(`${projectId}/v1.json`, JSON.stringify(initialVersionData));
+    await kv.put(`project:${projectId}:latest_version`, "1");
+
+    return c.json(
+      {
+        project,
+        version: 1,
+        imported: Object.keys(files).length,
+        skipped: skipped.length,
+        failed: failed.length,
+        truncated: tree.truncated ?? false,
+      },
+      201,
+    );
+  } catch (error) {
+    console.error("GitHub import error:", error);
+    return c.json(
+      {
+        error: "Failed to import from GitHub",
+        detail: error instanceof Error ? error.message : String(error),
+      },
+      500,
+    );
   }
 });
 
