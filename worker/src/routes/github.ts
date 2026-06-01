@@ -263,8 +263,11 @@ githubRouter.post("/import", async (c) => {
 
     const SKIP_DIRS =
       /(^|\/)(node_modules|\.git|\.next|dist|build|out|\.turbo|\.vercel|coverage|\.cache|vendor)\//;
+    // NOTE: .svg is intentionally NOT here — SVGs are text and are commonly
+    // imported as modules (logos/icons). Keeping them as text lets the Sandpack
+    // preview resolve those imports. Raster assets (png/jpg/…) stay skipped.
     const BINARY_EXT =
-      /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|svg|mp4|mov|webm|mp3|wav|ogg|flac|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|tar|rar|7z|exe|dll|so|dylib|wasm|bin|class|jar|psd|sketch|fig|node|map)$/i;
+      /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|mp4|mov|webm|mp3|wav|ogg|flac|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|tar|rar|7z|exe|dll|so|dylib|wasm|bin|class|jar|psd|sketch|fig|node|map)$/i;
     const SKIP_FILES =
       /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb)$/;
 
@@ -353,11 +356,34 @@ githubRouter.post("/import", async (c) => {
     };
     await kv.put(`user:${userId}:project:${projectId}`, JSON.stringify(project));
 
+    // Capture the repo's runtime dependencies so the Sandpack preview can
+    // install them — without this the preview fails with "module not found" on
+    // every npm import (radix, class-variance-authority, etc.). Sandpack's
+    // template manages react/react-dom itself, so drop those to avoid a clash.
+    const dependencies: Record<string, string> = {};
+    try {
+      const pkgRaw = files["/package.json"];
+      if (pkgRaw) {
+        const pkg = JSON.parse(pkgRaw) as {
+          dependencies?: Record<string, string>;
+        };
+        if (pkg.dependencies && typeof pkg.dependencies === "object") {
+          for (const [name, ver] of Object.entries(pkg.dependencies)) {
+            if (name === "react" || name === "react-dom") continue;
+            if (typeof ver === "string") dependencies[name] = ver;
+          }
+        }
+      }
+    } catch {
+      // Malformed package.json — preview falls back to its baseline deps.
+    }
+
     const initialVersionData = {
       version: 1,
       createdAt: now,
       prompt: `Imported from https://github.com/${owner}/${repo} (${ref})`,
       files,
+      dependencies,
     };
     await r2.put(`${projectId}/v1.json`, JSON.stringify(initialVersionData));
     await kv.put(`project:${projectId}:latest_version`, "1");

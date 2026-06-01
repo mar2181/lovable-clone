@@ -11,6 +11,7 @@ import {
 } from "@codesandbox/sandpack-react";
 import { atomDark } from "@codesandbox/sandpack-themes";
 import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
+import { buildInjectedTsconfig } from "@/lib/sandpack-alias";
 import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
 import { InspectorPanel } from "@/components/editor/inspector-panel";
 import { useSelectStore, makeSelection } from "@/lib/select-store";
@@ -408,6 +409,14 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
   if (!prepared["/App.tsx"] && !prepared["/App.jsx"] && !prepared["/App.js"]) {
     prepared["/App.tsx"] = DEFAULT_APP_CODE;
   }
+
+  // Teach Sandpack's static bundler how to resolve the project's path aliases
+  // (@/, ~/, or any custom alias declared in the repo's tsconfig/vite config).
+  // sandpack-core reads compilerOptions.paths but ONLY when baseUrl is set, and
+  // resolves targets at the flat root — which is exactly where the /src/ strip
+  // above puts the files. Without this, imported repos fail with "module not
+  // found" on every aliased import. Overrides any tsconfig the repo shipped.
+  prepared["/tsconfig.json"] = buildInjectedTsconfig(files);
 
   return prepared;
 }
