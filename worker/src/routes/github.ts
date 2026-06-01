@@ -257,17 +257,34 @@ githubRouter.post("/import", async (c) => {
     };
 
     // Limits keep us inside Workers subrequest budgets and R2/Sandpack sanity.
-    const MAX_FILE_BYTES = 256 * 1024; // 256 KB per file
+    const MAX_FILE_BYTES = 256 * 1024; // 256 KB per text file
     const MAX_FILES = 200;
-    const MAX_TOTAL_BYTES = 6 * 1024 * 1024; // 6 MB total
+    const MAX_TOTAL_BYTES = 6 * 1024 * 1024; // 6 MB total (text)
+    // Raster images are inlined as data: URIs so the preview renders them. They
+    // get their own budget so an image-heavy repo can't starve source files or
+    // blow up the project JSON (base64 adds ~33%).
+    const MAX_IMAGE_FILE_BYTES = 512 * 1024; // 512 KB per image
+    const MAX_IMAGE_TOTAL_BYTES = 3 * 1024 * 1024; // 3 MB of images total
 
     const SKIP_DIRS =
       /(^|\/)(node_modules|\.git|\.next|dist|build|out|\.turbo|\.vercel|coverage|\.cache|vendor)\//;
-    // NOTE: .svg is intentionally NOT here — SVGs are text and are commonly
-    // imported as modules (logos/icons). Keeping them as text lets the Sandpack
-    // preview resolve those imports. Raster assets (png/jpg/…) stay skipped.
+    // Raster images (png/jpg/…) are NOT skipped — they're fetched separately and
+    // stored as data: URIs (see the image pass below) so they render in preview.
+    // .svg is also kept (as text). Everything below is genuinely un-inlinable
+    // binary (fonts/video/audio/archives/etc.) and stays skipped.
+    const IMAGE_EXT = /\.(png|jpe?g|gif|webp|avif|ico|bmp)$/i;
+    const IMAGE_MIME: Record<string, string> = {
+      png: "image/png",
+      jpg: "image/jpeg",
+      jpeg: "image/jpeg",
+      gif: "image/gif",
+      webp: "image/webp",
+      avif: "image/avif",
+      ico: "image/x-icon",
+      bmp: "image/bmp",
+    };
     const BINARY_EXT =
-      /\.(png|jpe?g|gif|webp|avif|ico|bmp|tiff?|mp4|mov|webm|mp3|wav|ogg|flac|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|tar|rar|7z|exe|dll|so|dylib|wasm|bin|class|jar|psd|sketch|fig|node|map)$/i;
+      /\.(tiff?|mp4|mov|webm|mp3|wav|ogg|flac|woff2?|ttf|otf|eot|pdf|zip|gz|tgz|tar|rar|7z|exe|dll|so|dylib|wasm|bin|class|jar|psd|sketch|fig|node|map)$/i;
     const SKIP_FILES =
       /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb)$/;
 
@@ -278,6 +295,7 @@ githubRouter.post("/import", async (c) => {
 
     for (const n of blobs) {
       const slashed = "/" + n.path;
+      if (IMAGE_EXT.test(n.path)) continue; // handled by the image pass below
       if (
         SKIP_DIRS.test(slashed) ||
         BINARY_EXT.test(n.path) ||
@@ -300,6 +318,31 @@ githubRouter.post("/import", async (c) => {
       }
       selected.push(n);
       runningTotal += n.size ?? 0;
+    }
+
+    // Raster images: select within their own budget, skipping built/vendor dirs.
+    const selectedImages: typeof blobs = [];
+    let imageTotal = 0;
+    for (const n of blobs) {
+      if (!IMAGE_EXT.test(n.path)) continue;
+      if (SKIP_DIRS.test("/" + n.path)) {
+        skipped.push(n.path);
+        continue;
+      }
+      if ((n.size ?? 0) > MAX_IMAGE_FILE_BYTES) {
+        skipped.push(`${n.path} (image too large)`);
+        continue;
+      }
+      if (selected.length + selectedImages.length >= MAX_FILES) {
+        skipped.push(`${n.path} (file cap)`);
+        continue;
+      }
+      if (imageTotal + (n.size ?? 0) > MAX_IMAGE_TOTAL_BYTES) {
+        skipped.push(`${n.path} (image budget)`);
+        continue;
+      }
+      selectedImages.push(n);
+      imageTotal += n.size ?? 0;
     }
 
     if (selected.length === 0) {
@@ -331,6 +374,32 @@ githubRouter.post("/import", async (c) => {
           escape(atob(blob.content.replace(/\n/g, ""))),
         );
         files["/" + n.path] = decoded;
+      } catch {
+        failed.push(n.path);
+      }
+    }
+
+    // Raster images: keep the GitHub base64 as-is and store a data: URI (no
+    // decode). The preview inlines these into the source that references them.
+    for (const n of selectedImages) {
+      try {
+        const blobRes = await gh(`/repos/${owner}/${repo}/git/blobs/${n.sha}`);
+        if (!blobRes.ok) {
+          failed.push(n.path);
+          continue;
+        }
+        const blob = (await blobRes.json()) as {
+          content: string;
+          encoding: string;
+        };
+        if (blob.encoding !== "base64") {
+          failed.push(n.path);
+          continue;
+        }
+        const ext = (n.path.split(".").pop() || "").toLowerCase();
+        const mime = IMAGE_MIME[ext] || "application/octet-stream";
+        const b64 = blob.content.replace(/\n/g, "");
+        files["/" + n.path] = `data:${mime};base64,${b64}`;
       } catch {
         failed.push(n.path);
       }

@@ -11,7 +11,8 @@ import {
 } from "@codesandbox/sandpack-react";
 import { atomDark } from "@codesandbox/sandpack-themes";
 import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
-import { buildInjectedTsconfig } from "@/lib/sandpack-alias";
+import { buildInjectedTsconfig, collectAliases } from "@/lib/sandpack-alias";
+import { inlineAssets } from "@/lib/sandpack-assets";
 import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
 import { InspectorPanel } from "@/components/editor/inspector-panel";
 import { useSelectStore, makeSelection } from "@/lib/select-store";
@@ -410,15 +411,23 @@ function prepareFilesForSandpack(files: Record<string, string>): Record<string, 
     prepared["/App.tsx"] = DEFAULT_APP_CODE;
   }
 
+  // Inline image assets (data-URI rasters captured at import + SVG text) into
+  // the source that references them, and drop the raw raster files Sandpack's
+  // static bundler can't treat as modules. Resolves specifiers through the same
+  // relative + path-alias logic the code uses, so an imported repo's images
+  // render in the preview exactly as they do in the repo.
+  const aliases = collectAliases(files);
+  const withAssets = inlineAssets(prepared, aliases);
+
   // Teach Sandpack's static bundler how to resolve the project's path aliases
   // (@/, ~/, or any custom alias declared in the repo's tsconfig/vite config).
   // sandpack-core reads compilerOptions.paths but ONLY when baseUrl is set, and
   // resolves targets at the flat root — which is exactly where the /src/ strip
   // above puts the files. Without this, imported repos fail with "module not
   // found" on every aliased import. Overrides any tsconfig the repo shipped.
-  prepared["/tsconfig.json"] = buildInjectedTsconfig(files);
+  withAssets["/tsconfig.json"] = buildInjectedTsconfig(files);
 
-  return prepared;
+  return withAssets;
 }
 
 export function PreviewPanel({ files, dependencies = {}, projectId, onInlineApplied, onOpenCode }: PreviewPanelProps) {
