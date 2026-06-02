@@ -26,6 +26,7 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const [supabaseSchemaOpen, setSupabaseSchemaOpen] = useState(false);
   const [supabasePatMissing, setSupabasePatMissing] = useState(false);
   const isDragging = useRef(false);
+  const [resizing, setResizing] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
 
@@ -103,6 +104,8 @@ export function EditorShell({ projectId }: { projectId: string }) {
 
   const handleMouseDown = useCallback(() => {
     isDragging.current = true;
+    setResizing(true); // mounts a full-window overlay so the Sandpack iframe
+                       // can't swallow mousemove mid-drag (the real "bad control" bug)
     document.body.style.cursor = "col-resize";
     document.body.style.userSelect = "none";
   }, []);
@@ -112,14 +115,15 @@ export function EditorShell({ projectId }: { projectId: string }) {
       if (!isDragging.current || !containerRef.current) return;
       const containerRect = containerRef.current.getBoundingClientRect();
       const newWidth = e.clientX - containerRect.left;
-      // Clamp between 300px and 60% of container
-      const maxWidth = containerRect.width * 0.6;
-      setChatWidth(Math.max(300, Math.min(maxWidth, newWidth)));
+      // Clamp: down to 280px, up to 80% of the container — full control.
+      const maxWidth = containerRect.width * 0.8;
+      setChatWidth(Math.max(280, Math.min(maxWidth, newWidth)));
     };
 
     const handleMouseUp = () => {
       if (isDragging.current) {
         isDragging.current = false;
+        setResizing(false);
         document.body.style.cursor = "";
         document.body.style.userSelect = "";
       }
@@ -207,6 +211,11 @@ export function EditorShell({ projectId }: { projectId: string }) {
           />
         </div>
       </div>
+
+      {/* While dragging the chat/preview divider, this transparent overlay sits
+          above the Sandpack iframe so the parent keeps receiving mousemove —
+          without it the drag stalls the moment the cursor crosses the preview. */}
+      {resizing && <div className="fixed inset-0 z-[2147483000] cursor-col-resize" />}
 
       {/* Map Mode — numbered voice/keyboard command HUD (docs/SOP_MAP_MODE.md) */}
       <MapModeController />

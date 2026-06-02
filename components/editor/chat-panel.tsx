@@ -975,86 +975,96 @@ export function ChatPanel({ projectId, contextFiles, onUpdateFiles, onUpdateDepe
               )}
             </div>
 
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <input
-                  type="file"
-                  accept="image/*"
-                  multiple
-                  className="hidden"
-                  ref={fileInputRef}
-                  onChange={handleImageUpload}
-                />
+            {/* Actions — WRAP so nothing is ever clipped at any panel width.
+                Build + Ask are the two primary actions and stay reachable
+                first; Research / Cinematic / Attach follow and wrap below on
+                narrow widths. (Map Mode pins Build=#1, Ask=#2 regardless of
+                position — see map-mode-controller chromePriority.) */}
+            <input
+              type="file"
+              accept="image/*"
+              multiple
+              className="hidden"
+              ref={fileInputRef}
+              onChange={handleImageUpload}
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              {isGenerating ? (
                 <Button
                   type="button"
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
-                  onClick={() => fileInputRef.current?.click()}
-                  title="Attach images"
+                  size="sm"
+                  onClick={handleStop}
+                  aria-label="Stop"
+                  className="h-8 px-4 rounded-lg bg-red-600 text-white hover:bg-red-700 font-semibold"
+                  title="Stop the current generation"
                 >
-                  <Paperclip className="w-4 h-4" />
+                  <Square className="w-3.5 h-3.5 mr-1.5 fill-current" />
+                  Stop
                 </Button>
-              </div>
+              ) : (
+                <Button
+                  type="submit"
+                  size="sm"
+                  disabled={!prompt.trim() || hasUploadingAttachment}
+                  aria-label="Build"
+                  className="h-8 px-4 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50 font-semibold"
+                  title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Build / modify the app (Enter)"}
+                >
+                  <Hammer className="w-4 h-4 mr-1.5" />
+                  Build
+                </Button>
+              )}
 
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
-                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "ask")}
-                  className="h-8 px-3 rounded-lg bg-zinc-800 text-white border border-white/10 hover:bg-zinc-700 disabled:opacity-50"
-                  title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Discuss without making any code changes (Ctrl+Enter)"}
-                >
-                  <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
-                  Ask
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
-                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "research")}
-                  className="h-8 px-3 rounded-lg bg-amber-500/20 text-amber-100 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-50"
-                  title="Outlier Research Engine — scrape the top sites in this niche and build a Strategy.tsx as source-of-truth (~3–5 min)."
-                >
-                  <Brain className="w-3.5 h-3.5 mr-1.5" />
-                  Research
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
-                  onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "cinematic")}
-                  className="h-8 px-3 rounded-lg bg-fuchsia-500/20 text-fuchsia-100 border border-fuchsia-500/40 hover:bg-fuchsia-500/30 disabled:opacity-50"
-                  title="Cinematic Magazine Engine — dark-magazine page with a real Kling 5s hero video + fal.ai stills (blog, landing, or homepage; ~4 min)."
-                >
-                  <Film className="w-3.5 h-3.5 mr-1.5" />
-                  Cinematic
-                </Button>
-                {isGenerating ? (
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={handleStop}
-                    className="h-8 px-3 rounded-lg bg-red-600 text-white hover:bg-red-700"
-                    title="Stop the current generation"
-                  >
-                    <Square className="w-3.5 h-3.5 mr-1.5 fill-current" />
-                    Stop
-                  </Button>
-                ) : (
-                  <Button
-                    type="submit"
-                    size="sm"
-                    disabled={!prompt.trim() || hasUploadingAttachment}
-                    className="h-8 px-3 rounded-lg bg-primary text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
-                    title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Modify the code (Enter)"}
-                  >
-                    <Hammer className="w-3.5 h-3.5 mr-1.5" />
-                    Build
-                  </Button>
-                )}
-              </div>
+              <Button
+                type="button"
+                size="sm"
+                disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "ask")}
+                aria-label="Ask"
+                className="h-8 px-3 rounded-lg bg-zinc-800 text-white border border-white/10 hover:bg-zinc-700 disabled:opacity-50"
+                title={hasUploadingAttachment ? "Waiting for attachments to finish uploading…" : "Discuss without making any code changes (Ctrl+Enter)"}
+              >
+                <MessageSquare className="w-3.5 h-3.5 mr-1.5" />
+                Ask
+              </Button>
+
+              <Button
+                type="button"
+                size="sm"
+                disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "research")}
+                aria-label="Research"
+                className="h-8 px-3 rounded-lg bg-amber-500/20 text-amber-100 border border-amber-500/40 hover:bg-amber-500/30 disabled:opacity-50"
+                title="Outlier Research Engine — scrape the top sites in this niche and build a Strategy.tsx as source-of-truth (~3–5 min)."
+              >
+                <Brain className="w-3.5 h-3.5 mr-1.5" />
+                Research
+              </Button>
+
+              <Button
+                type="button"
+                size="sm"
+                disabled={!prompt.trim() || isGenerating || hasUploadingAttachment}
+                onClick={(e) => handleSubmit(e as unknown as React.FormEvent, "cinematic")}
+                aria-label="Cinematic"
+                className="h-8 px-3 rounded-lg bg-fuchsia-500/20 text-fuchsia-100 border border-fuchsia-500/40 hover:bg-fuchsia-500/30 disabled:opacity-50"
+                title="Cinematic Magazine Engine — dark-magazine page with a real Kling 5s hero video + fal.ai stills (blog, landing, or homepage; ~4 min)."
+              >
+                <Film className="w-3.5 h-3.5 mr-1.5" />
+                Cinematic
+              </Button>
+
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon"
+                aria-label="Attach images"
+                className="h-8 w-8 text-zinc-400 hover:text-white rounded-lg"
+                onClick={() => fileInputRef.current?.click()}
+                title="Attach images"
+              >
+                <Paperclip className="w-4 h-4" />
+              </Button>
             </div>
           </div>
         </form>

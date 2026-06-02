@@ -153,6 +153,19 @@ function collectChrome(): HTMLElement[] {
   return list;
 }
 
+// Priority for the most-used controls so they get the LOW numbers regardless of
+// where they sit on screen. Mario's rule: Build = #1, Ask = #2, then Cinematic,
+// Research, Attach. Everything else keeps reading order after these.
+function chromePriority(el: HTMLElement): number {
+  const n = (el.getAttribute("aria-label") || el.getAttribute("title") || el.textContent || "").trim().toLowerCase();
+  if (/^build$/.test(n)) return 0;
+  if (/^ask$/.test(n)) return 1;
+  if (/^cinematic$/.test(n)) return 2;
+  if (/^research$/.test(n)) return 3;
+  if (n.includes("attach")) return 4; // the paperclip ("Attach images")
+  return 100;
+}
+
 function setNativeValueP(el: HTMLInputElement | HTMLTextAreaElement, value: string) {
   const proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
   const desc = Object.getOwnPropertyDescriptor(proto, "value");
@@ -271,6 +284,9 @@ export function MapModeController() {
 
   const numberChrome = useCallback((): number => {
     const list = collectChrome();
+    // Stable sort: priority controls (Build=1, Ask=2, …) first, the rest keep
+    // collectChrome's reading order.
+    list.sort((a, b) => chromePriority(a) - chromePriority(b));
     const reg = chromeRegRef.current;
     reg.clear();
     list.forEach((el, i) => reg.set(i + 1, el));
