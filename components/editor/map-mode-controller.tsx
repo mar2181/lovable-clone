@@ -10,6 +10,9 @@
 
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useMapModeStore } from "@/lib/mapmode-store";
+import { useAuth } from "@/lib/dev-auth";
+import { WORKER_URL } from "@/lib/constants";
+import { SLASH_PROMPTS } from "@/lib/slash-prompts";
 
 /* ───────────────────────── command grammar (pure helpers) ───────────────── */
 
@@ -196,6 +199,30 @@ function pressEnterP(el: HTMLElement | null) {
   if (form && target.tagName === "INPUT") { try { form.requestSubmit(); } catch { /* no submit */ } }
 }
 
+// Slash commands: typed "/prompt …" or spoken "slash prompt …". Multi-word names
+// are spoken with spaces (key "blog-writer" => "slash blog writer"). Returns the
+// matched command name + the remaining raw text, or null.
+function parseSlash(line: string): { name: string; rest: string } | null {
+  const typed = line.match(/^\/([a-z][\w-]*)\s*([\s\S]*)$/i);
+  if (typed) return { name: typed[1].toLowerCase(), rest: typed[2].trim() };
+  const spoken = line.match(/^slash\s+([\s\S]+)$/i);
+  if (spoken) {
+    const rest0 = spoken[1].trim();
+    const lower = rest0.toLowerCase();
+    let best: { key: string; spoken: string } | null = null;
+    for (const key of Object.keys(SLASH_PROMPTS)) {
+      const sp = key.replace(/-/g, " ");
+      if (lower === sp || lower.startsWith(sp + " ")) {
+        if (!best || sp.length > best.spoken.length) best = { key, spoken: sp };
+      }
+    }
+    if (best) return { name: best.key, rest: rest0.slice(best.spoken.length).trim() };
+    const parts = rest0.split(/\s+/);
+    return { name: parts[0].toLowerCase(), rest: parts.slice(1).join(" ") };
+  }
+  return null;
+}
+
 /* minimal SpeechRecognition typing (DOM lib often lacks the webkit prefix) */
 type SpeechResults = ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }>;
 type SpeechLike = {
@@ -219,6 +246,7 @@ export function MapModeController() {
   const setFocus = useMapModeStore((s) => s.setFocus);
   const dictating = useMapModeStore((s) => s.dictating);
   const focusedNum = useMapModeStore((s) => s.focusedNum);
+  const { getToken } = useAuth();
 
   const [log, setLog] = useState<string[]>([]);
   const [cmd, setCmd] = useState("");
@@ -469,11 +497,56 @@ export function MapModeController() {
     [act, setFocus, pushLog, countAction, actChrome],
   );
 
+  /* ── /prompt &co — rewrite the raw text via the worker, type the result ─ */
+  const runImprove = useCallback(
+    async (raw: string, instruction: string, label: string) => {
+      if (!raw) { pushLog(`/${label}: say what you want after it`); return; }
+      pushLog(`✨ /${label} — improving…`);
+      try {
+        const token = await getToken();
+        const res = await fetch(`${WORKER_URL}/api/improve-prompt`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+          body: JSON.stringify({ raw, instruction }),
+        });
+        if (!res.ok) { pushLog(`✗ /${label} failed (${res.status})`); return; }
+        const data = (await res.json()) as { improved?: string };
+        const improved = (data.improved || "").trim();
+        if (!improved) { pushLog(`✗ /${label}: empty result`); return; }
+        if (focusScopeRef.current === "chrome" && focusedElRef.current) {
+          typeIntoP(focusedElRef.current, improved, false);
+        } else if (focusScopeRef.current === "preview") {
+          act({ kind: "type", text: improved });
+        } else {
+          // Default target: the composer textarea (the prompt box).
+          const ta = document.querySelector("textarea");
+          if (ta) { ta.focus(); typeIntoP(ta, improved, false); }
+          else { pushLog("✗ no field to write into — focus one by number first"); return; }
+        }
+        pushLog(`✨ /${label} → wrote ${improved.length} chars`);
+      } catch {
+        pushLog(`✗ /${label} error`);
+      }
+    },
+    [act, pushLog, getToken],
+  );
+
   /* ── route a raw utterance / typed line ───────────────────────────────── */
   const dispatch = useCallback(
     (raw: string, meta?: { speakMs?: number; recogMs?: number }) => {
       const line = raw.trim();
       if (!line) return;
+
+      // Slash commands (/prompt, /blog-writer, …) take precedence in map mode.
+      if (useMapModeStore.getState().isMapMode) {
+        const slash = parseSlash(line);
+        if (slash) {
+          const tpl = SLASH_PROMPTS[slash.name];
+          if (tpl) { void runImprove(slash.rest, tpl.instruction, tpl.label); }
+          else { pushLog(`? unknown /${slash.name} — try /prompt`); }
+          return;
+        }
+      }
 
       const periodSplit = line.split(/\bperiod\b/i);
       if (periodSplit.length === 2) {
@@ -506,7 +579,7 @@ export function MapModeController() {
         pushLog(`🎤 "${norm.value}" — focus a field by number first`);
       }
     },
-    [act, execCommand, pushLog, setMapMode, countAction, actChrome],
+    [act, execCommand, pushLog, setMapMode, countAction, actChrome, runImprove],
   );
 
   /* ── enable/disable chrome numbering when map mode toggles ────────────── *
