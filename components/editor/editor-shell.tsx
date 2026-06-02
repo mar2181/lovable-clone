@@ -4,6 +4,7 @@ import { useEffect, useState, useRef, useCallback } from "react";
 import { useAuth } from "@/lib/dev-auth";
 import { ChatPanel } from "@/components/editor/chat-panel";
 import { WorkspacePanel } from "@/components/editor/workspace-panel";
+import { MapModeController } from "@/components/editor/map-mode-controller";
 import { EditorHeader } from "@/components/editor/editor-header";
 import { ProjectMemory } from "@/components/editor/project-memory";
 import { SupabaseButton } from "@/components/editor/supabase-button";
@@ -206,6 +207,9 @@ export function EditorShell({ projectId }: { projectId: string }) {
           />
         </div>
       </div>
+
+      {/* Map Mode — numbered voice/keyboard command HUD (docs/SOP_MAP_MODE.md) */}
+      <MapModeController />
     </div>
   );
 }

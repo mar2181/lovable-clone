@@ -14,8 +14,10 @@ import { SANDPACK_SHADCN_FILES } from "@/lib/sandpack-shadcn";
 import { buildInjectedTsconfig, collectAliases } from "@/lib/sandpack-alias";
 import { inlineAssets } from "@/lib/sandpack-assets";
 import { SelectModeToggle } from "@/components/editor/select-mode-toggle";
+import { MapModeToggle } from "@/components/editor/map-mode-toggle";
 import { InspectorPanel } from "@/components/editor/inspector-panel";
 import { useSelectStore, makeSelection } from "@/lib/select-store";
+import { useMapModeStore } from "@/lib/mapmode-store";
 import { toast } from "sonner";
 
 interface PreviewPanelProps {
@@ -187,12 +189,206 @@ const SANDPACK_PICKER_SCRIPT = `
     if (selectBox) selectBox.style.display = "none";
   }
 
+  // ===== MAP MODE (numbered command navigation — docs/SOP_MAP_MODE.md) =====
+  var mmActive = false;
+  var mmReg = {};
+  var mmFocused = null;
+  var mmOverlay = null;
+  var mmRaf = 0;
+  var mmOffset = 0;
+  var MM_SEL = "a[href],button,input:not([type=hidden]),select,textarea,[contenteditable],[contenteditable=true],[role=button],[role=link],[role=tab],[role=menuitem],[role=checkbox],[role=switch],[role=radio],[tabindex],[onclick]";
+
+  function mmVisible(el){
+    if (!el || el.nodeType !== 1 || el.disabled) return false;
+    var r = el.getBoundingClientRect();
+    if (r.width <= 1 || r.height <= 1) return false;
+    if (r.bottom < 0 || r.top > window.innerHeight || r.right < 0 || r.left > window.innerWidth) return false;
+    var s = getComputedStyle(el);
+    if (s.visibility === "hidden" || s.display === "none" || parseFloat(s.opacity) === 0) return false;
+    return true;
+  }
+  function mmTypeable(el){
+    var t = el.tagName;
+    if (t === "TEXTAREA") return true;
+    if (t === "SELECT") return false;
+    if (t === "INPUT"){ var ty = (el.type || "text").toLowerCase(); return ["text","search","email","url","tel","password","number","date","time",""].indexOf(ty) !== -1; }
+    return el.isContentEditable === true;
+  }
+  function mmName(el){
+    var role = el.getAttribute("role") || el.tagName.toLowerCase();
+    if (el.tagName === "INPUT") role = (el.type || "text") + " input";
+    var n = el.getAttribute("aria-label") || el.getAttribute("placeholder") || (el.value ? String(el.value).slice(0,20) : "") || (el.textContent || "").trim().slice(0,24) || el.name || "";
+    return (role + (n ? (" " + n.trim()) : "")).slice(0,60);
+  }
+  function mmClickable(el){
+    var tag = el.tagName;
+    if (tag === "BUTTON" || tag === "A" || tag === "SUMMARY") return true;
+    var role = el.getAttribute("role");
+    if (role && "button link tab menuitem menuitemcheckbox menuitemradio option switch checkbox radio".indexOf(role) !== -1) return true;
+    return getComputedStyle(el).cursor === "pointer";
+  }
+  function mmEnumerate(){
+    var seen = [], list = [];
+    function mmAdd(el){
+      if (!el || el.nodeType !== 1) return;
+      if (el === mmOverlay || (mmOverlay && mmOverlay.contains(el))) return;
+      if (el === hoverBox || el === selectBox) return;
+      if (seen.indexOf(el) !== -1) return;
+      if (!mmVisible(el)) return;
+      seen.push(el); list.push(el);
+    }
+    var nodes = document.querySelectorAll(MM_SEL);
+    for (var i = 0; i < nodes.length; i++) mmAdd(nodes[i]);
+    // Styled clickable <div>/components: React uses synthetic events so there is
+    // no onclick attribute — detect via cursor:pointer, keeping the outermost of
+    // each pointer subtree (cursor inherits) so icon+label collapse to one mark.
+    var all = document.body ? document.body.querySelectorAll("*") : [];
+    for (var k = 0; k < all.length; k++){
+      var e = all[k];
+      if (getComputedStyle(e).cursor !== "pointer") continue;
+      var pe = e.parentElement;
+      if (pe && getComputedStyle(pe).cursor === "pointer") continue;
+      mmAdd(e);
+    }
+    // Drop anything nested inside a clickable ancestor (the ancestor is the target).
+    var clk = [];
+    for (var a = 0; a < list.length; a++) clk.push(mmClickable(list[a]));
+    var filtered = [];
+    for (var b = 0; b < list.length; b++){
+      var drop = false;
+      for (var c = 0; c < list.length; c++){ if (c !== b && clk[c] && list[c].contains(list[b])){ drop = true; break; } }
+      if (!drop) filtered.push(list[b]);
+    }
+    list = filtered;
+    list.sort(function(a,b){
+      var ra = a.getBoundingClientRect(), rb = b.getBoundingClientRect();
+      var x = Math.round(ra.top/24), y = Math.round(rb.top/24);
+      if (x !== y) return x - y;
+      return ra.left - rb.left;
+    });
+    mmReg = {};
+    var marks = [];
+    for (var j = 0; j < list.length; j++){
+      var num = mmOffset + j + 1; mmReg[num] = list[j];
+      var rr = list[j].getBoundingClientRect();
+      marks.push({ num: num, tag: list[j].tagName.toLowerCase(), name: mmName(list[j]), typeable: mmTypeable(list[j]), bbox: { x: rr.left, y: rr.top, width: rr.width, height: rr.height } });
+    }
+    return marks;
+  }
+  function mmEnsureOverlay(){
+    if (mmOverlay) return;
+    mmOverlay = document.createElement("div");
+    mmOverlay.style.cssText = "position:fixed;inset:0;z-index:2147483640;pointer-events:none;";
+    document.body.appendChild(mmOverlay);
+  }
+  function mmRender(){
+    if (!mmOverlay) return;
+    mmOverlay.innerHTML = "";
+    for (var n in mmReg){
+      var el = mmReg[n]; if (!el) continue;
+      var r = el.getBoundingClientRect();
+      var foc = el === mmFocused;
+      var chip = document.createElement("div");
+      chip.textContent = n;
+      chip.style.cssText = "position:absolute;left:" + Math.max(0,r.left) + "px;top:" + Math.max(0,r.top) + "px;transform:translate(-2px,-10px);font:700 11px/1.4 ui-monospace,monospace;padding:1px 5px;border-radius:5px;white-space:nowrap;color:#1a1100;background:" + (foc ? "#34d399" : "#facc15") + ";box-shadow:0 1px 3px rgba(0,0,0,.45);border:1px solid rgba(0,0,0,.25);";
+      mmOverlay.appendChild(chip);
+      if (foc){
+        var ring = document.createElement("div");
+        ring.style.cssText = "position:absolute;left:" + r.left + "px;top:" + r.top + "px;width:" + r.width + "px;height:" + r.height + "px;border:2px solid #34d399;border-radius:6px;box-sizing:border-box;";
+        mmOverlay.appendChild(ring);
+      }
+    }
+  }
+  function mmRefresh(){
+    if (!mmActive) return;
+    var marks = mmEnumerate(); mmRender(); sendUp("mapmode-marks", { marks: marks });
+  }
+  function mmReposition(){
+    if (!mmActive || mmRaf) return;
+    mmRaf = requestAnimationFrame(function(){ mmRaf = 0; mmRefresh(); });
+  }
+  function mmSetVal(el, value){
+    var proto = el.tagName === "TEXTAREA" ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+    var desc = Object.getOwnPropertyDescriptor(proto, "value");
+    if (desc && desc.set) desc.set.call(el, value); else el.value = value;
+    el.dispatchEvent(new Event("input", { bubbles: true }));
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+  function mmTypeInto(el, text, append){
+    if (!el) return false;
+    if (el.isContentEditable){ el.textContent = append ? ((el.textContent || "") + (el.textContent ? " " : "") + text) : text; el.dispatchEvent(new Event("input", { bubbles: true })); return true; }
+    if (!mmTypeable(el)) return false;
+    mmSetVal(el, append && el.value ? (el.value + " " + text) : text);
+    return true;
+  }
+  function mmKey(el, key){
+    el = el || document.activeElement;
+    if (!el) return;
+    var kc = key === "Enter" ? 13 : (key === "Tab" ? 9 : 0);
+    var o = { key: key, code: key, keyCode: kc, which: kc, bubbles: true, cancelable: true };
+    el.dispatchEvent(new KeyboardEvent("keydown", o));
+    el.dispatchEvent(new KeyboardEvent("keyup", o));
+    if (key === "Enter" && el.form && el.tagName === "INPUT"){ try { el.form.requestSubmit(); } catch(e){} }
+  }
+  function mmAct(p){
+    p = p || {};
+    var t0 = (window.performance && performance.now) ? performance.now() : Date.now();
+    var kind = p.kind, num = p.num, label = "";
+    var el = (num != null) ? mmReg[num] : mmFocused;
+    if (kind === "focus"){
+      if (!el){ label = "no #" + num; }
+      else { mmFocused = el; try { el.focus(); } catch(e){} try { el.scrollIntoView({ block: "center" }); } catch(e){} mmRender(); label = "focus #" + num; }
+    } else if (kind === "click"){
+      if (!el){ label = "no #" + num; }
+      else { mmFocused = el; try { el.focus(); } catch(e){} el.click(); mmRender(); label = "click #" + num; setTimeout(mmRefresh, 60); }
+    } else if (kind === "type"){
+      label = mmTypeInto(mmFocused, p.text || "", false) ? "type" : "no field";
+    } else if (kind === "append"){
+      label = mmTypeInto(mmFocused, p.text || "", true) ? "append" : "no field";
+    } else if (kind === "clear"){
+      if (mmFocused && mmTypeable(mmFocused)){ mmSetVal(mmFocused, ""); label = "clear"; } else label = "no field";
+    } else if (kind === "enter"){
+      mmKey(mmFocused, "Enter"); label = "enter"; setTimeout(mmRefresh, 60);
+    } else if (kind === "tab" || kind === "shift tab"){
+      mmKey(mmFocused, "Tab"); label = kind;
+    } else if (kind === "scroll"){
+      window.scrollBy({ top: (p.text === "up" ? -1 : 1) * Math.round(window.innerHeight * 0.8), behavior: "smooth" }); label = "scroll " + (p.text || "down");
+    } else if (kind === "top"){
+      window.scrollTo({ top: 0, behavior: "smooth" }); label = "top";
+    } else if (kind === "bottom"){
+      window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" }); label = "bottom";
+    } else if (kind === "back"){
+      try { history.back(); } catch(e){} label = "back";
+    }
+    var ms = ((window.performance && performance.now) ? performance.now() : Date.now()) - t0;
+    sendUp("mapmode-acted", { num: (num != null ? num : null), label: label, execMs: Math.round(ms) });
+  }
+  function mmEnable(){
+    if (mmActive) return; mmActive = true;
+    mmEnsureOverlay();
+    window.addEventListener("scroll", mmReposition, true);
+    window.addEventListener("resize", mmReposition);
+    mmRefresh();
+  }
+  function mmDisable(){
+    if (!mmActive) return; mmActive = false; mmFocused = null;
+    window.removeEventListener("scroll", mmReposition, true);
+    window.removeEventListener("resize", mmReposition);
+    if (mmOverlay && mmOverlay.parentNode){ mmOverlay.parentNode.removeChild(mmOverlay); }
+    mmOverlay = null;
+    mmReg = {};
+  }
+
   window.addEventListener("message", function(ev){
     var d = ev.data;
     if (!d || d.source !== MSG_SRC || d.v !== 1) return;
     if (d.type === "enable") enable();
     else if (d.type === "disable") disable();
     else if (d.type === "clear") { if (selectBox) selectBox.style.display = "none"; }
+    else if (d.type === "mapmode-enable") { mmOffset = (d.payload && d.payload.offset) || 0; mmEnable(); }
+    else if (d.type === "mapmode-disable") mmDisable();
+    else if (d.type === "mapmode-refresh") { if (d.payload && typeof d.payload.offset === "number") mmOffset = d.payload.offset; mmRefresh(); }
+    else if (d.type === "mapmode-act") mmAct(d.payload);
   });
 
   // Announce readiness on load — handles re-mounts after Sandpack rebuilds.
@@ -524,11 +720,18 @@ export function PreviewPanel({ files, dependencies = {}, projectId, onInlineAppl
         setSelection(makeSelection(d.payload));
       } else if (d.type === "cleared") {
         clearSelection();
+      } else if (d.type === "mapmode-marks") {
+        useMapModeStore.getState().setMarks(d.payload?.marks || []);
+      } else if (d.type === "mapmode-acted") {
+        useMapModeStore.getState().pushActed(d.payload || { num: null, label: "", execMs: 0 });
       } else if (d.type === "ready") {
         if (enableTimerRef.current) clearTimeout(enableTimerRef.current);
-        // Re-send enable if mode is active (handles Sandpack remount)
+        // Re-send enable if a mode is active (handles Sandpack remount)
         if (useSelectStore.getState().isModeActive) {
           sendToIframe("enable");
+        }
+        if (useMapModeStore.getState().isMapMode) {
+          sendToIframe("mapmode-enable", { offset: useMapModeStore.getState().previewOffset });
         }
       }
     };
@@ -537,6 +740,22 @@ export function PreviewPanel({ files, dependencies = {}, projectId, onInlineAppl
     return () => window.removeEventListener("message", handler);
   }, [setSelection, clearSelection, sendToIframe, getIframe]);
   // ── End selection mode ──────────────────────────────────────────
+
+  // ── Map mode ─────────────────────────────────────────────────────
+  // MapModeController orchestrates enable/disable: it numbers the chrome first,
+  // then enables the iframe with the right offset. This panel only exposes the
+  // iframe bridge (so the controller can post commands) and relays the iframe's
+  // marks/acted messages (see the message handler above + "ready" re-enable).
+  useEffect(() => {
+    useMapModeStore.getState().setSender(sendToIframe);
+    try {
+      const iframe = getIframe();
+      if (iframe) expectedOriginRef.current = new URL(iframe.src).origin;
+    } catch {
+      expectedOriginRef.current = null;
+    }
+  }, [sendToIframe, getIframe]);
+  // ── End map mode ─────────────────────────────────────────────────
 
   const handleRefresh = () => {
     setKey(prev => prev + 1);
@@ -575,6 +794,7 @@ export function PreviewPanel({ files, dependencies = {}, projectId, onInlineAppl
       <div className="h-12 border-b border-white/5 bg-zinc-950/50 flex items-center justify-between px-4 shrink-0 z-20 relative">
         <div className="flex bg-zinc-900 rounded-lg p-1 border border-white/5">
           <SelectModeToggle />
+          <MapModeToggle />
           {showNewTooltip && (
             <div
               className="absolute top-full left-0 mt-2 z-50 bg-blue-600 text-white text-xs px-3 py-2 rounded-lg shadow-lg max-w-[260px] animate-in fade-in slide-in-from-top-1"
