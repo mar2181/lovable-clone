@@ -181,7 +181,7 @@ export async function generateBatch(
   modelId: string,
   falKey: string,
   onEvent: (event: BuildEvent) => Promise<void>,
-  assetOptions?: { r2: R2Bucket; projectId: string; publicBaseUrl: string },
+  assetOptions?: { r2: R2Bucket; projectId: string; publicBaseUrl: string; strategyDigest?: string },
 ): Promise<BuildManifest> {
   const batch = manifest.batches[batchIndex];
   if (!batch) {
@@ -206,7 +206,7 @@ export async function generateBatch(
   }
 
   // Build prompts
-  const systemPrompt = buildBatchSystemPrompt(isFirstBatch, batchIndex, manifest.totalBatches);
+  const systemPrompt = buildBatchSystemPrompt(isFirstBatch, batchIndex, manifest.totalBatches, assetOptions?.strategyDigest);
   const userMessage = buildBatchUserMessage(manifest, batch, batchIndex);
 
   // Call AI

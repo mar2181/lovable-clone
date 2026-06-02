@@ -54,6 +54,12 @@ buildRouter.post("/:projectId", async (c) => {
     const projectExists = await kv.get(`user:${userId}:project:${projectId}`);
     if (!projectExists) return c.json({ error: "Project not found" }, 404);
 
+    // Outlier Research source-of-truth: load the strategy digest a prior
+    // research run stashed in KV so the multi-page builder honors it on every
+    // batch (the chat path already does this; the Build panel did not).
+    const strategyDigest = (await kv.get(`project:${projectId}:strategy_digest`)) || "";
+    console.log(`[Build] project=${projectId} strategy=${strategyDigest ? `present (${strategyDigest.length} bytes — injected into every batch)` : "none — run Research first"}`);
+
     // 4. Resolve build plan
     let plan: BuildPlan;
 
@@ -131,6 +137,7 @@ buildRouter.post("/:projectId", async (c) => {
               r2,
               projectId,
               publicBaseUrl: new URL(c.req.url).origin,
+              strategyDigest,
             },
           );
 

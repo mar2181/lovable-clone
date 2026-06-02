@@ -8,6 +8,8 @@
  * Used by the Ralph Loop orchestrator to generate pages in batches.
  */
 
+import { STRATEGY_SOURCE_OF_TRUTH } from "./system-prompt";
+
 const MULTI_PAGE_SHARED_RULES = `
 # Environment Details
 - React 18 with TypeScript and Tailwind CSS (loaded via CDN).
@@ -194,12 +196,21 @@ Generate the new page files and the updated App.tsx. Include complete, functiona
 export function buildBatchSystemPrompt(
   isFirstBatch: boolean,
   batchIndex: number,
-  totalBatches: number
+  totalBatches: number,
+  strategyDigest?: string
 ): string {
   const base = isFirstBatch ? MULTI_PAGE_SCAFFOLD_PROMPT : MULTI_PAGE_ITERATION_PROMPT;
 
-  return `${base}
+  // Research source-of-truth: when a prior Outlier Research run produced a
+  // strategy digest, inject it so the multi-page Build path honors it — the
+  // same source-of-truth the single-turn chat path already injects. Without
+  // this the Build panel is research-blind ("the builder has no access").
+  const strategyBlock = strategyDigest
+    ? `\n${STRATEGY_SOURCE_OF_TRUTH(strategyDigest)}\n`
+    : "";
 
+  return `${base}
+${strategyBlock}
 # Current Batch Info
 - Batch: ${batchIndex + 1} of ${totalBatches}
 - ${isFirstBatch ? "This is the foundation batch — set up routing, shared components, and design system." : "This is a follow-up batch — add new pages to the existing project."}

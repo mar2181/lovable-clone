@@ -91,6 +91,8 @@ export function PetConcierge() {
     script.setAttribute("data-accent", "#a855f7");
     script.setAttribute("data-sprite-src", GARY_SPRITE);
     script.setAttribute("data-worker", WORKER_URL);
+    script.setAttribute("data-ambient", "true");
+    script.setAttribute("data-wander", "true");
     script.setAttribute(
       "data-greeting",
       "Hi! I'm Gary, your build buddy. Want to spin up a new app, or shall we dig into the one you're already in?"
