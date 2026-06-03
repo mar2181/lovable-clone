@@ -3091,12 +3091,25 @@
       setTimeout(res, 3000);
     });
 
-    const resp = await fetch(session.connectUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Session-Token": session.sessionToken || "" },
-      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
-    });
-    if (!resp.ok) throw new Error("self-hosted offer failed: HTTP " + resp.status);
+    let resp;
+    try {
+      resp = await fetch(session.connectUrl, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "X-Session-Token": session.sessionToken || "" },
+        body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+      });
+    } catch (e) {
+      // Box unreachable — tear down mic + peer connection so the ElevenLabs
+      // fallback (in startCall) starts clean, then rethrow to trigger it.
+      try { pc.close(); } catch (_) {}
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+      throw e;
+    }
+    if (!resp.ok) {
+      try { pc.close(); } catch (_) {}
+      try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+      throw new Error("self-hosted offer failed: HTTP " + resp.status);
+    }
     await pc.setRemoteDescription(await resp.json());
 
     return {
@@ -3115,6 +3128,29 @@
         return a;
       },
     };
+  }
+
+  // ── ElevenLabs transport (primary path, and the AUTO-FALLBACK) ────────────
+  // Loads the ConvAI SDK and starts the session. Resolves a signed URL unless
+  // one is supplied (the normal EL path passes the already-resolved one from
+  // fetchSession; the self-hosted fallback passes none so we resolve fresh).
+  // Uses the SAME startOpts (clientTools + callbacks) as the box, so behaviour
+  // after connect is identical regardless of which backend answered.
+  async function startElevenLabs(startOpts, resume, signedUrlOverride) {
+    const sdk = await loadSdk();
+    const ConversationCtor = sdk.Conversation || (sdk.default && sdk.default.Conversation);
+    if (!ConversationCtor || typeof ConversationCtor.startSession !== "function") {
+      throw new Error("ElevenLabs SDK missing Conversation.startSession");
+    }
+    startOpts.signedUrl = signedUrlOverride || (await fetchSignedUrl());
+    // EXCEPTION to the "no overrides" rule: on resume after a full-document
+    // navigation, suppress first_message so the pet continues mid-conversation
+    // instead of re-greeting. Requires the agent's first_message override flag.
+    if (resume) {
+      startOpts.overrides = { agent: { firstMessage: "" } };
+      console.log("[PC] resume mode — suppressing agent first_message");
+    }
+    return await ConversationCtor.startSession(startOpts);
   }
 
   // ── start() / end() ───────────────────────────────────────────────────────
@@ -3306,31 +3342,31 @@
       if (inputDeviceId) startOpts.inputDeviceId = inputDeviceId;
 
       // (6) Start the session on the resolved backend.
+      // ── AUTO-FALLBACK TO ELEVENLABS ──────────────────────────────────────
+      // The self-hosted box is primary. If it is unreachable (down, cold,
+      // network) the offer POST throws — we catch it and silently start the
+      // SAME pet on ElevenLabs instead, so the visitor never sees a dead pet.
+      // ElevenLabs stays dormant (zero cost / zero traffic) unless this fires.
+      // The next call automatically prefers the box again once it's healthy —
+      // there is no sticky "degraded" state to reset.
       if (session.backend === "selfhosted") {
-        // Self-hosted Pipecat/Chatterbox box. Persona/dynamicVariables are set
-        // server-side from the session token; page context flows via
-        // sendContextualUpdate (fired in onConnect, same as EL).
-        STATE.conversation = await startPipecatSession(startOpts, session, inputDeviceId);
+        try {
+          // Persona/dynamicVariables are set server-side from the session token;
+          // page context flows via sendContextualUpdate (onConnect, same as EL).
+          STATE.conversation = await startPipecatSession(startOpts, session, inputDeviceId);
+          STATE.activeBackend = "selfhosted";
+        } catch (e) {
+          console.warn("[PC] self-hosted box unavailable — falling back to ElevenLabs", e);
+          emit("fallback", { from: "selfhosted", to: "elevenlabs",
+                             reason: String((e && e.message) || e) });
+          setBubbleLine("Reconnecting…");
+          STATE.conversation = await startElevenLabs(startOpts, resume);
+          STATE.activeBackend = "elevenlabs-fallback";
+        }
       } else {
-        // ── ElevenLabs path (unchanged) ──
-        const sdk = await loadSdk();
-        const ConversationCtor = sdk.Conversation || sdk.default && sdk.default.Conversation;
-        if (!ConversationCtor || typeof ConversationCtor.startSession !== "function") {
-          throw new Error("ElevenLabs SDK missing Conversation.startSession");
-        }
-        startOpts.signedUrl = session.signedUrl;
-        // EXCEPTION to "no overrides" rule: on resume after a full-document
-        // navigation, suppress first_message so Jack doesn't re-greet ("Hey
-        // I'm Jack…") instead of continuing the conversation. Requires
-        // `platform_settings.overrides.conversation_config_override.agent
-        // .first_message = true` on the agent; without that the WS dies
-        // with close code 1008 ("Override for field 'first_message' is not
-        // allowed by config").
-        if (resume) {
-          startOpts.overrides = { agent: { firstMessage: "" } };
-          console.log("[PC] resume mode — suppressing agent first_message");
-        }
-        STATE.conversation = await ConversationCtor.startSession(startOpts);
+        // ── ElevenLabs path (primary when data-backend=elevenlabs) ──
+        STATE.conversation = await startElevenLabs(startOpts, resume, session.signedUrl);
+        STATE.activeBackend = "elevenlabs";
       }
       console.log("[PC] session started");
       // Un-suspend the SDK's freshly-created OUTPUT AudioContext. On a fast
