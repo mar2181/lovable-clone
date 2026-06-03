@@ -100,6 +100,13 @@
   const CONFIG = {
     token:      attr("data-token", ""),
     endpoint:   attr("data-endpoint", SCRIPT_ORIGIN + "/api/voice-session"),
+    // Voice backend. "elevenlabs" (default) = today's ConvAI path, untouched.
+    // "selfhosted" = the Pipecat/Chatterbox box (Phase B). The Vercel broker
+    // (B6) normally selects this per-pet; data-backend forces it for staging.
+    backend:    attr("data-backend", "elevenlabs"),
+    // Self-hosted only: base origin of the GPU box (…/api/offer + …/api/dev-token).
+    // In production the broker returns connectUrl; this is the staging fallback.
+    connectUrl: attr("data-connect-url", ""),
     assetBase:  attr("data-asset-base", SCRIPT_ORIGIN),
     autostart:  attr("data-autostart", "true") !== "false",
     pet:        petKey,
@@ -139,6 +146,16 @@
   // Text-zoom multiplier set by the set_text_size tool. Persisted so the
   // visitor's chosen size survives navigation, and re-applied on boot().
   const STORAGE_KEY_TEXT_SCALE = "petconcierge.textScale";
+  // Onboarding memory. A full-document navigation tears down the WebSocket and
+  // starts a BRAND-NEW ElevenLabs conversation that has zero transcript history
+  // — so without this the agent forgets the website/email/business the visitor
+  // already gave it the instant it changes pages ("he has no context of the
+  // information I just gave him"). We persist every collected detail here and
+  // replay it into each (re)connect's contextualUpdate so the agent stays
+  // stateful across navigations. Same-origin sessionStorage is shared with the
+  // host page's own wizard, so the form and the agent see the same facts.
+  const STORAGE_KEY_MEMORY = "petconcierge.memory";
+  const MEMORY_TTL_MS = 30 * 60 * 1000; // 30 min — long enough for a real signup, short enough to not leak across visits
   const RESUME_TTL_MS = 15000;
   const MAX_RECONNECT_ATTEMPTS = 2;
   const NAVIGATE_DELAY_MS = 1800;
@@ -208,7 +225,7 @@
     // ends the call mid-delay — otherwise the resume sentinel still gets
     // written and the next page auto-resumes against the user's intent.
     pendingNavTimer: null,
-    listeners: { start: [], end: [], error: [], message: [] },
+    listeners: { start: [], end: [], error: [] },
     // Intake questionnaire accumulator (builder pets only)
     intake: { open: false, answers: {} },
     // Ambient + wander loop timers. Set when CONFIG.ambient/wander are on
@@ -1262,6 +1279,90 @@
     } catch (_) { return ""; }
   }
 
+  // ── Onboarding memory (survives full-document navigation) ─────────────────
+  // Classify an input/textarea as one of the onboarding slots we want the agent
+  // to remember across page loads. Matches by type + id/name/placeholder/
+  // aria-label + associated <label> text, so it works on the marketing wizard
+  // (#site-url / #contact-email / #business-name / #greeting-edit) AND on a
+  // customer's own contact form without per-site config.
+  function onboardingSlotForElement(el) {
+    if (!el) return null;
+    if (!(el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement)) return null;
+    const type = (el.type || "").toLowerCase();
+    if (type === "password" || type === "hidden" || type === "checkbox" || type === "radio" || type === "file") return null;
+    let lbl = "";
+    if (el.id) {
+      try {
+        const l = document.querySelector("label[for=\"" + CSS.escape(el.id) + "\"]");
+        if (l) lbl = (l.textContent || "").toLowerCase();
+      } catch (_) {}
+    }
+    const hay = [el.id, el.name, el.placeholder, el.getAttribute("aria-label"), lbl]
+      .map(function (x) { return (x || "").toLowerCase(); }).join(" ");
+    if (type === "email" || /\be-?mail\b/.test(hay)) return "email";
+    if (/\b(site|website|url|domain)\b/.test(hay) || /site-?url|website-?url/.test(hay)) return "website";
+    if (/\b(business|company|organi[sz]ation|brand)\b/.test(hay) || /(shop|store|business) name/.test(hay)) return "business";
+    if (/greeting|first message|welcome message/.test(hay)) return "greeting";
+    return null;
+  }
+
+  // Read the per-agent memory bag, guarding on token (don't replay one agent's
+  // facts into another) and TTL (don't leak last week's signup into a new one).
+  function readMemoryRaw() {
+    const empty = { token: CONFIG.token, when: 0, slots: {} };
+    try {
+      const raw = sessionStorage.getItem(STORAGE_KEY_MEMORY);
+      if (!raw) return empty;
+      const m = JSON.parse(raw);
+      if (!m || typeof m !== "object" || !m.slots || typeof m.slots !== "object") return empty;
+      if (m.token && CONFIG.token && m.token !== CONFIG.token) return empty;
+      if (m.when && (Date.now() - m.when) > MEMORY_TTL_MS) return empty;
+      return { token: m.token || CONFIG.token, when: m.when || 0, slots: m.slots };
+    } catch (_) { return empty; }
+  }
+
+  // Merge one collected detail. Empty value clears the slot. Idempotent — a
+  // no-op write (same value) is skipped so we don't churn sessionStorage on
+  // every keystroke.
+  function saveSlot(key, value) {
+    if (!key) return;
+    value = String(value == null ? "" : value).trim();
+    if (value.length > 240) value = value.slice(0, 240);
+    try {
+      const mem = readMemoryRaw();
+      if (!value) {
+        if (!(key in mem.slots)) return;
+        delete mem.slots[key];
+      } else {
+        if (mem.slots[key] === value) return;
+        mem.slots[key] = value;
+      }
+      mem.token = CONFIG.token;
+      mem.when = Date.now();
+      sessionStorage.setItem(STORAGE_KEY_MEMORY, JSON.stringify(mem));
+      console.log("[PC] memory ← " + key + "=" + (key === "email" ? "<email>" : value));
+    } catch (_) {}
+  }
+
+  // Render the collected details as a contextualUpdate block, or "" if none.
+  // Appended to every (re)connect so the agent treats them as known facts and
+  // stops re-asking after a navigation.
+  function memoryContextString() {
+    const s = readMemoryRaw().slots || {};
+    const parts = [];
+    if (s.website)   parts.push("their website / URL is \"" + s.website + "\"");
+    if (s.business)  parts.push("their business name is \"" + s.business + "\"");
+    if (s.email)     parts.push("their contact email is \"" + s.email + "\"");
+    if (s.character) parts.push("they chose the \"" + s.character + "\" character");
+    if (s.greeting)  parts.push("their greeting is \"" + s.greeting + "\"");
+    if (!parts.length) return "";
+    return "\n[ALREADY COLLECTED FROM THIS VISITOR earlier in this same session — these are KNOWN FACTS, " +
+           "remembered across page changes. Do NOT ask for any of them again. Reuse them directly " +
+           "(e.g. type the website/email/business straight into the onboarding form, skip questions you " +
+           "already have answers to). If you genuinely must confirm, confirm in one short line — never re-collect.]\n- " +
+           parts.join("\n- ");
+  }
+
   // ── Page context (dynamicVariables + contextualUpdate) — Rule 11 ──────────
   function buildPageContext() {
     const pathname = location.pathname || "/";
@@ -1279,7 +1380,8 @@
         : "") +
       (outline
         ? "\n[PAGE OUTLINE — what is on this page right now. Use these EXACT labels with your click_element / type_text / scroll_to / highlight_element tools. Some items may live on a later step of a multi-step form; fill every (required) field and make every required selection before clicking a Next/advance button.]\n" + outline
-        : "");
+        : "") +
+      memoryContextString();
     return {
       summary: "Page=" + label + " (" + pathname + ")" + (outline ? " +outline" : "") + (navDest ? " +nav" : ""),
       dynamicVariables: {
@@ -2878,6 +2980,143 @@
     }
   }
 
+  // ── Session resolver (backend-agnostic) ───────────────────────────────────
+  // Returns {backend:"elevenlabs", signedUrl} OR {backend:"selfhosted",
+  // connectUrl, sessionToken}. The ElevenLabs branch is exactly fetchSignedUrl()
+  // as before. The self-hosted branch prefers a broker-minted sessionToken (B6)
+  // and falls back to the box's /api/dev-token for staging.
+  async function fetchSession() {
+    if (CONFIG.backend === "selfhosted") {
+      let base = (CONFIG.connectUrl || SCRIPT_ORIGIN).replace(/\/+$/, "");
+      let token = "";
+      try {
+        const r = await fetch(CONFIG.endpoint, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: CONFIG.token }),
+        });
+        if (r.ok) {
+          const b = await r.json();
+          if (b.connectUrl) base = String(b.connectUrl).replace(/\/+$/, "");
+          if (b.sessionToken) token = b.sessionToken;
+        }
+      } catch (_) { /* no broker in staging — fall through to dev-token */ }
+      if (!token) {
+        try {
+          const d = await fetch(base + "/api/dev-token");
+          if (d.ok) token = (await d.json()).token || "";
+        } catch (_) {}
+      }
+      return { backend: "selfhosted", connectUrl: base + "/api/offer", sessionToken: token };
+    }
+    const signedUrl = await fetchSignedUrl();
+    return { backend: "elevenlabs", signedUrl: signedUrl };
+  }
+
+  // ── Self-hosted transport (Pipecat/Chatterbox over WebRTC + RTVI) ─────────
+  // Returns an object that mirrors the slice of the ElevenLabs Conversation
+  // interface the rest of embed.js depends on — endSession(),
+  // sendContextualUpdate(text), getInputByteFrequencyData() — and fires the
+  // SAME startOpts callbacks (onConnect/onDisconnect/onModeChange). Tool calls
+  // arrive over the RTVI data channel and are dispatched to the SAME
+  // startOpts.clientTools bodies, so page-driving behavior is identical.
+  async function startPipecatSession(opts, session, inputDeviceId) {
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+    const dc = pc.createDataChannel("pipecat");
+
+    const audio = inputDeviceId ? { deviceId: { exact: inputDeviceId } } : true;
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: audio });
+    stream.getTracks().forEach(function (t) { pc.addTrack(t, stream); });
+    pc.addTransceiver("audio", { direction: "recvonly" });
+
+    // Mic-level source so the existing 10Hz meter (getInputByteFrequencyData)
+    // works unchanged against this backend.
+    let analyser = null;
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext;
+      const ac = new AC();
+      ac.createMediaStreamSource(stream).connect(analyser = ac.createAnalyser());
+      analyser.fftSize = 256;
+    } catch (_) {}
+
+    const remote = new Audio();
+    remote.autoplay = true;
+    pc.ontrack = function (e) { remote.srcObject = e.streams[0]; };
+
+    let connected = false, ended = false;
+    pc.onconnectionstatechange = function () {
+      const s = pc.connectionState;
+      console.log("[PC] selfhosted pc:", s);
+      if (s === "connected" && !connected) {
+        connected = true;
+        // Defer so startCall has already assigned STATE.conversation before
+        // onConnect (which reads STATE.conversation.sendContextualUpdate) runs.
+        setTimeout(function () { opts.onConnect && opts.onConnect(); }, 0);
+      } else if ((s === "failed" || s === "closed" || s === "disconnected") && !ended) {
+        ended = true;
+        opts.onDisconnect && opts.onDisconnect({ code: 1000, reason: s });
+      }
+    };
+
+    function send(o) { if (dc.readyState === "open") dc.send(JSON.stringify(o)); }
+    function clientMsg(t, d) {
+      send({ label: "rtvi-ai", type: "client-message",
+             id: (crypto.randomUUID ? crypto.randomUUID() : String(Math.random())),
+             data: { t: t, d: d } });
+    }
+
+    dc.onmessage = async function (ev) {
+      let msg; try { msg = JSON.parse(ev.data); } catch (_) { return; }
+      if (msg.type === "server-message" && msg.data && msg.data.t === "tool_call") {
+        const call = msg.data;
+        const fn = opts.clientTools && opts.clientTools[call.name];
+        let result;
+        try { result = fn ? await fn(call.args || {}) : { error: "unknown tool " + call.name }; }
+        catch (e) { result = { error: String((e && e.message) || e) }; }
+        clientMsg("tool_result", { id: call.id, result: (result === undefined ? { ok: true } : result) });
+      } else if (msg.type === "bot-tts-started") {
+        opts.onModeChange && opts.onModeChange({ mode: "speaking" });
+      } else if (msg.type === "bot-tts-stopped") {
+        opts.onModeChange && opts.onModeChange({ mode: "listening" });
+      }
+    };
+
+    await pc.setLocalDescription(await pc.createOffer({ offerToReceiveAudio: true }));
+    await new Promise(function (res) {
+      if (pc.iceGatheringState === "complete") return res();
+      const c = function () {
+        if (pc.iceGatheringState === "complete") { pc.removeEventListener("icegatheringstatechange", c); res(); }
+      };
+      pc.addEventListener("icegatheringstatechange", c);
+      setTimeout(res, 3000);
+    });
+
+    const resp = await fetch(session.connectUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Session-Token": session.sessionToken || "" },
+      body: JSON.stringify({ sdp: pc.localDescription.sdp, type: pc.localDescription.type }),
+    });
+    if (!resp.ok) throw new Error("self-hosted offer failed: HTTP " + resp.status);
+    await pc.setRemoteDescription(await resp.json());
+
+    return {
+      _backend: "selfhosted",
+      endSession: async function () {
+        ended = true;
+        try { send({ label: "rtvi-ai", type: "disconnect-bot", id: "end", data: null }); } catch (_) {}
+        try { pc.close(); } catch (_) {}
+        try { stream.getTracks().forEach(function (t) { t.stop(); }); } catch (_) {}
+      },
+      sendContextualUpdate: function (text) { clientMsg("context_update", { text: text }); },
+      getInputByteFrequencyData: function () {
+        if (!analyser) return new Uint8Array(0);
+        const a = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(a);
+        return a;
+      },
+    };
+  }
+
   // ── start() / end() ───────────────────────────────────────────────────────
 
   // HARD-WON RULE 2: single canonical toggle so the drag-end + Talk-button +
@@ -2930,9 +3169,9 @@
         console.log("[PC] SDK will use device =", chosen ? chosen.label : "(browser default)");
       } catch (_) {}
 
-      // (3) Signed URL.
-      console.log("[PC] fetching signed URL…");
-      const signedUrl = await fetchSignedUrl();
+      // (3) Resolve the session (backend + credentials).
+      console.log("[PC] resolving session (backend=" + CONFIG.backend + ")…");
+      const session = await fetchSession();
 
       // (4) Page context. Make sure sitemap+nav discovery has finished so the
       // {{available_pages}} dynamic variable is populated on the FIRST reply.
@@ -2941,16 +3180,11 @@
       console.log("[PC] page context →", ctx.summary,
                   "(" + (DISCOVERED_PAGES ? DISCOVERED_PAGES.length : 0) + " pages known)");
 
-      // (5) Load SDK + start session.
-      const sdk = await loadSdk();
-      const ConversationCtor = sdk.Conversation || sdk.default && sdk.default.Conversation;
-      if (!ConversationCtor || typeof ConversationCtor.startSession !== "function") {
-        throw new Error("ElevenLabs SDK missing Conversation.startSession");
-      }
-
-      console.log("[PC] starting session with signed URL + inputDeviceId =", inputDeviceId || "(unset)");
+      // (5) Build the shared start options (clientTools + callbacks). Both
+      // backends use the SAME clientTools bodies and the SAME callbacks; only
+      // the transport differs (EL SDK vs Pipecat/WebRTC).
+      console.log("[PC] starting session, backend=" + session.backend + ", inputDeviceId =", inputDeviceId || "(unset)");
       const startOpts = {
-        signedUrl: signedUrl,
         clientTools: (function () {
           var builtin = {
             navigate_to:                TOOLS.navigate_to,
@@ -3046,13 +3280,7 @@
             setError(text);
           }
         },
-        onMessage: function (m) {
-          console.debug("[PC] message", m);
-          // ADDITIVE (Builder rail): re-emit the transcript so a host UI can
-          // render a running chat log. The shared embed swallowed this before;
-          // apps that don't listen to "message" are byte-identically unaffected.
-          try { emit("message", { source: (m && m.source) || "ai", text: (m && m.message) || "" }); } catch (e) {}
-        },
+        onMessage: function (m) { console.debug("[PC] message", m); try { emit("message", { source: (m && m.source) || "ai", text: (m && m.message) || "" }); } catch (e) {} },
         onModeChange: function (mode) {
           // SDK shape: { mode: "speaking" | "listening" }
           const speaking = (mode && (mode.mode === "speaking" || mode === "speaking"));
@@ -3076,19 +3304,34 @@
         },
       };
       if (inputDeviceId) startOpts.inputDeviceId = inputDeviceId;
-      // EXCEPTION to "no overrides" rule: on resume after a full-document
-      // navigation, suppress first_message so Jack doesn't re-greet ("Hey
-      // I'm Jack…") instead of continuing the conversation. Requires
-      // `platform_settings.overrides.conversation_config_override.agent
-      // .first_message = true` on the agent; without that the WS dies
-      // with close code 1008 ("Override for field 'first_message' is not
-      // allowed by config").
-      if (resume) {
-        startOpts.overrides = { agent: { firstMessage: "" } };
-        console.log("[PC] resume mode — suppressing agent first_message");
-      }
 
-      STATE.conversation = await ConversationCtor.startSession(startOpts);
+      // (6) Start the session on the resolved backend.
+      if (session.backend === "selfhosted") {
+        // Self-hosted Pipecat/Chatterbox box. Persona/dynamicVariables are set
+        // server-side from the session token; page context flows via
+        // sendContextualUpdate (fired in onConnect, same as EL).
+        STATE.conversation = await startPipecatSession(startOpts, session, inputDeviceId);
+      } else {
+        // ── ElevenLabs path (unchanged) ──
+        const sdk = await loadSdk();
+        const ConversationCtor = sdk.Conversation || sdk.default && sdk.default.Conversation;
+        if (!ConversationCtor || typeof ConversationCtor.startSession !== "function") {
+          throw new Error("ElevenLabs SDK missing Conversation.startSession");
+        }
+        startOpts.signedUrl = session.signedUrl;
+        // EXCEPTION to "no overrides" rule: on resume after a full-document
+        // navigation, suppress first_message so Jack doesn't re-greet ("Hey
+        // I'm Jack…") instead of continuing the conversation. Requires
+        // `platform_settings.overrides.conversation_config_override.agent
+        // .first_message = true` on the agent; without that the WS dies
+        // with close code 1008 ("Override for field 'first_message' is not
+        // allowed by config").
+        if (resume) {
+          startOpts.overrides = { agent: { firstMessage: "" } };
+          console.log("[PC] resume mode — suppressing agent first_message");
+        }
+        STATE.conversation = await ConversationCtor.startSession(startOpts);
+      }
       console.log("[PC] session started");
       // Un-suspend the SDK's freshly-created OUTPUT AudioContext. On a fast
       // (warm) load this resolves inside the click's activation and the
@@ -3272,8 +3515,9 @@
     get inputLevel() { return STATE.inputLevel; },
     get error() { return STATE.error; },
     // ADDITIVE (Builder rail): let a host UI send a TEXT turn (type-to-chat).
-    // Uses the live ElevenLabs Conversation's user_activity + user_message
-    // frames (present since @elevenlabs/client@0.1.5). No-op until connected.
+    // ElevenLabs path uses the Conversation's user_message frames. On the
+    // self-hosted backend STATE.conversation has no sendUserMessage yet, so this
+    // no-ops there until the RTVI text-turn bridge lands (layer 2).
     sendText: function (t) {
       var text = String(t == null ? "" : t).trim();
       if (!text) return false;
@@ -3352,7 +3596,8 @@
                        "DO NOT say \"Hey I'm Jack\", DO NOT ask if they want a tour. " +
                        "Just briefly acknowledge in ONE short sentence that you've arrived on " + label + " " +
                        "and continue helping them. Example tone: \"Alright, here we are on " + label + " — " +
-                       "want me to walk you through it?\" Keep it natural and short.";
+                       "want me to walk you through it?\" Keep it natural and short." +
+                       memoryContextString();
             STATE.conversation.sendContextualUpdate(msg);
             console.log("[PC] contextualUpdate (resume) →", msg);
           }
@@ -3458,6 +3703,31 @@
     // window.__PetConciergeNavigate skip writing the sentinel because their
     // pushState navigation never tears down the JS context in the first place.
     tryResumeCall();
+    // Onboarding memory capture. A single delegated listener records every
+    // onboarding detail the moment it lands in a field — whether the visitor
+    // typed it OR the agent filled it via type_text (which dispatches real
+    // input/change events). Persisted to sessionStorage so it survives the
+    // full-document reload a static site forces on navigate_to, then replayed
+    // into the next connect's contextualUpdate (see memoryContextString).
+    var captureSlot = function (e) {
+      try {
+        var slot = onboardingSlotForElement(e && e.target);
+        if (slot) saveSlot(slot, e.target.value);
+      } catch (_) {}
+    };
+    document.addEventListener("input", captureSlot, true);
+    document.addEventListener("change", captureSlot, true);
+    // Character choice — capture when a picker card carrying data-pet is
+    // clicked (covers both a human click and the agent's click_element, which
+    // dispatches a real click). Harmless on pages with no such cards.
+    document.addEventListener("click", function (e) {
+      try {
+        var t = e && e.target;
+        var card = t && t.closest ? t.closest("[data-pet]") : null;
+        var pet = card && card.getAttribute("data-pet");
+        if (pet) saveSlot("character", pet);
+      } catch (_) {}
+    }, true);
     // Opt-in choreography smoke test — runs only with ?choreotest=1 in the URL.
     if (hasQueryFlag("choreotest")) {
       console.log("[PC] ?choreotest=1 detected — running run_choreography self-test");

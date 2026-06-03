@@ -87,6 +87,18 @@ export function PetConcierge() {
     const script = document.createElement("script");
     script.src = PET_CONCIERGE_URL;
     script.setAttribute("data-token", GARY_AGENT_ID);
+    // ── SELF-HOSTED CUTOVER (2026-06-03) ──────────────────────────────────────
+    // Route this pet's voice + brain through OUR GPU box (Chatterbox TTS +
+    // faster-whisper + OpenRouter + pgvector RAG) over WebRTC, instead of
+    // ElevenLabs. The box is gated by an HMAC session token minted at
+    // <connect-url>/api/dev-token (staging). INSTANT ROLLBACK: delete these three
+    // lines (or set data-backend to "elevenlabs") → the embed resolves the prod
+    // broker + ElevenLabs again, exactly as before. data-pet selects which pet
+    // config the box serves (currently "jack" — a builder-specific "spacemario"
+    // pet on the box is the next layer).
+    script.setAttribute("data-backend", "selfhosted");
+    script.setAttribute("data-connect-url", "https://d69w2do40jaobq-7860.proxy.runpod.net");
+    script.setAttribute("data-pet", "jack");
     script.setAttribute("data-name", "Space Mario");
     script.setAttribute("data-accent", "#a855f7");
     script.setAttribute("data-sprite-src", GARY_SPRITE);
