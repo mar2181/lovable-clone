@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono, Instrument_Serif } from "next/font/google";
 import { ClerkProvider } from "@/lib/dev-auth";
 import { PetConcierge } from "@/components/pet-concierge";
+import { BuddyPanel } from "@/components/buddy-panel";
 import "./globals.css";
 
 const geistSans = Geist({
@@ -37,6 +38,7 @@ export default function RootLayout({
         <body className={`${geistSans.variable} ${geistMono.variable} ${instrumentSerif.variable} min-h-screen bg-background font-sans antialiased flex flex-col`}>
           {children}
           <PetConcierge />
+          <BuddyPanel />
         </body>
       </html>
     </ClerkProvider>
