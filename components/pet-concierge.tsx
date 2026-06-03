@@ -100,8 +100,18 @@ export function PetConcierge() {
     script.async = true;
     document.body.appendChild(script);
 
+    // Swap Gary's chibi body for the premium Space Mario astronaut. Keeps the
+    // voice brain + nav + worker tools intact; hides embed.js's .pc-sprite and
+    // mounts the frame-sequence engine, bridging body tools into clientTools.
+    // Reversible: delete this block + /public/space-mario-buddy.js + /public/space-mario/.
+    const spaceMario = document.createElement("script");
+    spaceMario.src = "/space-mario-buddy.js";
+    spaceMario.async = true;
+    document.body.appendChild(spaceMario);
+
     return () => {
       script.remove();
+      spaceMario.remove();
     };
   }, [router, getToken]);
 
