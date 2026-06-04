@@ -39,7 +39,10 @@
     var s = document.createElement('style');
     s.id = 'sm-hide-legacy';
     s.textContent =
-      '.pc-overlay .pc-sprite{display:none!important;visibility:hidden!important;}' +
+      // Rail mode: the embed runs HEADLESS — its whole floating widget (sprite,
+      // speech bubble, project tablet, mic meter) is hidden; the docked panel
+      // (BuddyPanel) is the only UI. The voice/transcript engine stays alive.
+      '.pc-overlay{display:none!important;visibility:hidden!important;pointer-events:none!important;}' +
       '.pb-jack-float{display:none!important;visibility:hidden!important;pointer-events:none!important;}' +
       '.pb-jack-status{display:none!important;visibility:hidden!important;}';
     (document.head || document.documentElement).appendChild(s);
@@ -270,21 +273,93 @@
     i.el.addEventListener('touchstart', function () { btn.style.opacity = '1'; setTimeout(function () { btn.style.opacity = '0'; }, 3000); }, { passive: true });
   }
 
+  /* ─────────── rail docking: home over #buddy-dock, fly-out-then-return ─────────── */
+  function dockEl() { return document.getElementById('buddy-dock'); }
+  function dockRect() { var d = dockEl(); return d ? d.getBoundingClientRect() : null; }
+
+  // Patch the behavior prototype so EVERY home calculation (entrance,
+  // engaged-snap, return-after-tour/point, resize) targets the rail's dock
+  // instead of a screen corner. Done ONCE, before mount, so the very first
+  // entrance lands in the rail. Fly-out/return is then free: goPointAt /
+  // jumpTo / tour already call _returnToDock()/_returnToDockP() when done.
+  function railDockPatch() {
+    var BP = window.HermesBehavior && window.HermesBehavior.prototype;
+    if (!BP || BP.__railPatched) return;
+    BP.__railPatched = true;
+    BP._dockX = function () {
+      var r = dockRect(), w = this.el.offsetWidth;
+      return r ? Math.round(r.left + r.width / 2 - w / 2)
+               : Math.max(12, window.innerWidth - w - 28);
+    };
+    BP._dockY = function () {
+      var r = dockRect(), h = this.el.offsetHeight;
+      return r ? Math.round(r.top + Math.max(2, (r.height - h) / 2))
+               : Math.max(12, window.innerHeight - h - 6);
+    };
+    // Rail-friendly arrival: rise straight UP from below the dock INTO it, then
+    // wave. (The stock entrance is choreographed for a bottom corner and reads
+    // wrong flying up to a top-right rail.)
+    BP.replayEntrance = function () {
+      var self = this; this.busy = true;
+      if (this.spotlight) this.spotlight(null, false);
+      var dx = this._dockX(), dy = this._dockY(), bh = this.el.offsetHeight;
+      this.x = dx; this.y = Math.min(window.innerHeight + bh, dy + 280); this._place();
+      this.p.play('jet', { facing: 1, restart: true });
+      return this._glide(dx, dy, this._dur(1500)).then(function () {
+        self.busy = false; self.state = 'engaged'; self.last = performance.now();
+        self.p.play('idle', { facing: 1 }); self.react('wave');
+      });
+    };
+  }
+
+  function reHome(inst) {
+    if (!inst || !inst.behavior) return;
+    var b = inst.behavior;
+    try { b.x = b._dockX(); b.y = b._dockY(); b._place(); } catch (e) {}
+  }
+
+  // Show/hide + re-home when the rail collapses/expands (BuddyPanel fires this).
+  function wireLayout(inst) {
+    window.addEventListener('buddy:layout', function (e) {
+      if (!inst || !inst.el) return;
+      var open = !(e && e.detail && e.detail.open === false);
+      if (open) {
+        inst.el.style.display = '';
+        setTimeout(function () { reHome(inst); try { inst.behavior.react('wave'); } catch (e2) {} }, 60);
+      } else {
+        inst.el.style.display = 'none';
+      }
+    });
+  }
+
+  function doMount() {
+    if (!window.SpaceMario) { console.error('[space-mario] engine not available'); return; }
+    railDockPatch();
+    var vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1024;
+    var bodySize = vw < 640 ? 132 : 150;
+    window.SpaceMario.mount({
+      base: BASE, corner: 'tr', personality: 'normal', size: bodySize,
+      entrance: 'rise', speed: 0.7,
+      idleCalmMs: 22000, idlePlayMs: 240000,
+      z: 2147483602, onClick: toggleVoice,
+      onReady: function (inst) {
+        window.__SM_INST = inst;
+        wireVoice(inst);
+        wireLayout(inst);
+        try { if (localStorage.getItem('buddy.open') === '0') inst.el.style.display = 'none'; } catch (e) {}
+      }
+    });
+  }
+
+  // Wait for the rail's dock to exist (React renders it) before mounting, so the
+  // first entrance homes into the rail. Falls back after ~6s if it never shows.
   function mount() {
     hideLegacy();
-    try { if (sessionStorage.getItem(STORAGE_DISMISS) === '1') { showRecallTab(); return; } } catch (e) {}
-    if (!window.SpaceMario) { console.error('[space-mario] engine not available'); return; }
-    var vw = (typeof window !== 'undefined' && window.innerWidth) ? window.innerWidth : 1024;
-    var bodySize = vw < 640 ? 156 : 220;
-    window.SpaceMario.mount({
-      base: BASE, corner: 'br', personality: 'normal', size: bodySize,
-      entrance: 'rise',
-      speed: 0.7,
-      idleCalmMs: 22000,
-      idlePlayMs: 240000,
-      z: 2147483600, onClick: toggleVoice,
-      onReady: function (inst) { window.__SM_INST = inst; wireVoice(inst); attachControls(inst); }
-    });
+    var tries = 0;
+    (function waitDock() {
+      if (dockEl() || tries++ > 60) doMount();
+      else setTimeout(waitDock, 100);
+    })();
   }
 
   function boot() { hideLegacy(); loadSeq(ENGINE, mount); }
