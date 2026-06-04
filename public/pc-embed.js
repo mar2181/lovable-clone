@@ -2959,7 +2959,11 @@
       const res = await fetch(CONFIG.endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token: CONFIG.token }),
+        // backend:"elevenlabs" forces the broker to return an EL signed URL —
+        // fetchSignedUrl is only ever the EL path (primary or selfhosted→EL
+        // fallback). Without it, a force-selfhosted agent would get another
+        // selfhosted token (no signedUrl) and the fallback would fail.
+        body: JSON.stringify({ token: CONFIG.token, backend: "elevenlabs" }),
         signal: ctrl.signal,
       });
       let body = {};

@@ -97,7 +97,7 @@ export function PetConcierge() {
     // config the box serves (currently "jack" — a builder-specific "spacemario"
     // pet on the box is the next layer).
     script.setAttribute("data-backend", "selfhosted");
-    script.setAttribute("data-connect-url", "https://d69w2do40jaobq-7860.proxy.runpod.net");
+    script.setAttribute("data-connect-url", "https://6by4qzcocfvflz-7860.proxy.runpod.net");
     script.setAttribute("data-pet", "jack");
     script.setAttribute("data-name", "Space Mario");
     script.setAttribute("data-accent", "#a855f7");
