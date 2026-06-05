@@ -1,10 +1,16 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
+import { generateText } from "ai";
+import { createOpenAI } from "@ai-sdk/openai";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// POST /api/retarget/:id — Clone-and-Swap engine.
+// Clone-and-Swap engine.  Two endpoints, one swap core:
+//
+//   POST /api/retarget/:id            — swap with a CALLER-SUPPLIED `target`.
+//   POST /api/retarget/:id/from-url   — scrape a target firm's website, extract
+//                                       the identity with an LLM, then swap.
 //
 // Re-targets an "orlando-family" personal-injury template (the pristine master
 // `tuqnPHcLCa` or any fresh clone of it) to a NEW law firm in one shot: firm
@@ -17,7 +23,7 @@ import { authMiddleware } from "../middleware/auth";
 // longest-match-first sequence so identity is swapped everywhere without
 // clobbering unrelated text. Saved as an append-only new version (rollback-safe).
 //
-// Body:
+// POST /:id body:
 //   {
 //     createCopy?: boolean,          // default true — clone first, keep master pristine
 //     newProjectName?: string,       // name for the copy (createCopy only)
@@ -36,8 +42,19 @@ import { authMiddleware } from "../middleware/auth";
 //     extraReplacements?: Array<{ old: string, new: string }>   // applied last
 //   }
 //
-// Response: { project, sourceId, newVersion, createdCopy, appliedTotal,
+// POST /:id/from-url body:
+//   {
+//     sourceUrl: string,             // the target firm's website to scrape
+//     dryRun?: boolean,              // default false — true returns the extracted
+//                                    //   identity WITHOUT swapping (preview/confirm)
+//     createCopy?, newProjectName?,  // same as above
+//     overrides?: Partial<target>,   // caller fields win over anything scraped
+//     extraReplacements?: [...]
+//   }
+//
+// Response (swap): { project, sourceId, newVersion, createdCopy, appliedTotal,
 //             byRule: {...}, residuals: {...}, imagesNeedingReplacement: [...] }
+// Response (dryRun / missing fields): { extracted, missing, sourceMeta }
 // ─────────────────────────────────────────────────────────────────────────────
 
 const retargetRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
@@ -68,6 +85,10 @@ const ORLANDO = {
   // Orlando-specific asset markers (these images MUST be replaced per client).
   assetMarkers: ["alaniz-lawfirm", "orlandogarcia", "Website-Video"],
 };
+
+// Fields the swap cannot run without. Anything here that's still empty after
+// scrape + overrides is reported back as `missing` (422) so the UI can ask.
+const REQUIRED_TARGET_FIELDS = ["firmFull", "attorneyFull", "phone", "addressLine", "city", "state", "zip"] as const;
 
 interface Replacement { rule: string; from: string; to: string; }
 
@@ -141,154 +162,337 @@ function countOccurrences(haystack: string, needle: string): number {
   return count;
 }
 
+// Normalize a target identity in place: derive the attorney last name and trim
+// whitespace so downstream replacements and the required-field check are stable.
+function normalizeTarget(t: any): void {
+  if (!t || typeof t !== "object") return;
+  for (const k of Object.keys(t)) {
+    if (typeof t[k] === "string") t[k] = t[k].trim();
+  }
+  if (!t.attorneyLast && typeof t.attorneyFull === "string" && t.attorneyFull) {
+    t.attorneyLast = t.attorneyFull.split(/\s+/).pop() || "";
+  }
+}
+
+function missingRequired(t: any): string[] {
+  return REQUIRED_TARGET_FIELDS.filter((f) => typeof t?.[f] !== "string" || !t[f].trim());
+}
+
+// ── Swap core (shared by both endpoints) ─────────────────────────────────────
+// Loads the source version, applies the identity swap, persists (new copy or
+// append-only new version), and returns { status, body } for the route to emit.
+async function performRetarget(
+  env: Bindings,
+  userId: string,
+  sourceId: string,
+  t: any,
+  opts: { createCopy: boolean; newProjectName?: string; extraReplacements?: Array<{ old: string; new: string }> },
+): Promise<{ status: 201 | 404 | 422; body: any }> {
+  const kv = env.KV_METADATA;
+  const r2 = env.R2_PROJECTS;
+
+  // Ownership + load latest version files.
+  const sourceStr = await kv.get(`user:${userId}:project:${sourceId}`);
+  if (!sourceStr) return { status: 404, body: { error: "Project not found" } };
+  const source = JSON.parse(sourceStr);
+  const latestVersionStr = await kv.get(`project:${sourceId}:latest_version`);
+  if (!latestVersionStr) return { status: 422, body: { error: "Project has no versions" } };
+  const srcObj = await r2.get(`${sourceId}/v${latestVersionStr}.json`);
+  if (!srcObj) return { status: 422, body: { error: "Source version data missing" } };
+  const srcVersion = JSON.parse(await srcObj.text());
+  const files: Record<string, string> = { ...(srcVersion?.files || {}) };
+  const dependencies = srcVersion?.dependencies || {};
+  if (Object.keys(files).length === 0) {
+    return { status: 422, body: { error: "Source has no files" } };
+  }
+
+  // Apply replacements globally, longest-match-first.
+  const reps = buildReplacements(t, opts.extraReplacements || []);
+  const byRule: Record<string, number> = {};
+  let appliedTotal = 0;
+  for (const { rule, from, to } of reps) {
+    let hits = 0;
+    for (const path of Object.keys(files)) {
+      const n = countOccurrences(files[path], from);
+      if (n > 0) {
+        files[path] = files[path].split(from).join(to);
+        hits += n;
+      }
+    }
+    byRule[rule] = (byRule[rule] || 0) + hits;
+    appliedTotal += hits;
+  }
+
+  // Residual scan — any old identity still present is a swap gap.
+  const residualNeedles: Record<string, string> = {
+    "firm-name": ORLANDO.firmFull,
+    "attorney": ORLANDO.attorneyFull,
+    "phone-1": ORLANDO.phones[0],
+    "phone-2": ORLANDO.phones[1],
+    "address": ORLANDO.addressLine,
+    "city": ORLANDO.city,
+    "last-name": ORLANDO.attorneyLast,
+  };
+  const residuals: Record<string, { count: number; files: string[] }> = {};
+  for (const [label, needle] of Object.entries(residualNeedles)) {
+    let count = 0; const where: string[] = [];
+    for (const path of Object.keys(files)) {
+      const n = countOccurrences(files[path], needle);
+      if (n > 0) { count += n; where.push(path.split("/").pop() as string); }
+    }
+    if (count > 0) residuals[label] = { count, files: where };
+  }
+
+  // Orlando-specific images that were NOT overridden → need the client's asset.
+  const imagesNeedingReplacement: string[] = [];
+  for (const path of Object.keys(files)) {
+    for (const marker of ORLANDO.assetMarkers) {
+      const idx = files[path].indexOf(marker);
+      if (idx !== -1) {
+        // capture the surrounding URL token
+        const start = files[path].lastIndexOf("http", idx);
+        const end = Math.min(
+          ...["\"", "'", ")", " ", "\n"].map((ch) => {
+            const p = files[path].indexOf(ch, idx);
+            return p === -1 ? Number.MAX_SAFE_INTEGER : p;
+          }),
+        );
+        const url = start !== -1 && end !== Number.MAX_SAFE_INTEGER ? files[path].slice(start, end) : marker;
+        imagesNeedingReplacement.push(`${path.split("/").pop()} → ${url}`);
+      }
+    }
+  }
+
+  // Persist: new project (createCopy) or append-only new version in place.
+  const now = new Date().toISOString();
+  let targetProjectId = sourceId;
+  let newVersionNum: number;
+  let project: any;
+
+  if (opts.createCopy) {
+    targetProjectId = nanoid(10);
+    newVersionNum = 1;
+    project = {
+      id: targetProjectId,
+      userId,
+      name: (typeof opts.newProjectName === "string" && opts.newProjectName.trim())
+        ? opts.newProjectName.trim()
+        : t.firmFull,
+      description: `Retargeted from ${source.name}`,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const versionData: Record<string, unknown> = {
+      version: 1, createdAt: now,
+      prompt: `Retargeted from ${source.name} → ${t.firmFull}`,
+      files,
+      ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+    };
+    await r2.put(`${targetProjectId}/v1.json`, JSON.stringify(versionData));
+    await kv.put(`project:${targetProjectId}:latest_version`, "1");
+    await kv.put(`user:${userId}:project:${targetProjectId}`, JSON.stringify(project));
+  } else {
+    newVersionNum = parseInt(latestVersionStr) + 1;
+    const versionData: Record<string, unknown> = {
+      version: newVersionNum, createdAt: now,
+      prompt: `Retarget → ${t.firmFull} (${appliedTotal} replacements)`,
+      files,
+      ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
+    };
+    await r2.put(`${sourceId}/v${newVersionNum}.json`, JSON.stringify(versionData));
+    await kv.put(`project:${sourceId}:latest_version`, newVersionNum.toString());
+    project = { ...source, updatedAt: now };
+    await kv.put(`user:${userId}:project:${sourceId}`, JSON.stringify(project));
+  }
+
+  console.log(`[Retarget] user=${userId} ${sourceId}→${targetProjectId} v${newVersionNum} firm="${t.firmFull}" applied=${appliedTotal} residualKeys=${Object.keys(residuals).length}`);
+
+  return {
+    status: 201,
+    body: {
+      project,
+      sourceId,
+      newVersion: newVersionNum,
+      createdCopy: opts.createCopy,
+      appliedTotal,
+      byRule,
+      residuals,
+      imagesNeedingReplacement,
+    },
+  };
+}
+
+// ── Scrape + LLM identity extraction (powers /from-url) ──────────────────────
+const FIRECRAWL_SCRAPE_URL = "https://api.firecrawl.dev/v1/scrape";
+const EXTRACT_MARKDOWN_CAP = 40 * 1024; // law-firm sites are small; contact is in header/footer
+
+async function scrapeMarkdown(env: Bindings, url: string): Promise<{ markdown: string; title?: string; statusCode?: number }> {
+  if (!env.FIRECRAWL_API_KEY) throw new Error("FIRECRAWL_API_KEY is not configured on the worker");
+  const resp = await fetch(FIRECRAWL_SCRAPE_URL, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${env.FIRECRAWL_API_KEY}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: false }),
+  });
+  if (!resp.ok) {
+    const text = await resp.text().catch(() => "");
+    throw new Error(`Firecrawl scrape failed: ${resp.status} ${resp.statusText} ${text.slice(0, 200)}`);
+  }
+  const data = (await resp.json()) as any;
+  const markdown = (data?.data?.markdown || "").trim();
+  if (!markdown) throw new Error(`No content scraped from ${url}`);
+  return {
+    markdown,
+    title: data?.data?.metadata?.title,
+    statusCode: data?.data?.metadata?.statusCode,
+  };
+}
+
+// Send the page head + tail (contact info usually lives in the footer) so the
+// model sees the firm name and the address without us shipping the whole page.
+function clampForExtraction(md: string): string {
+  if (md.length <= EXTRACT_MARKDOWN_CAP) return md;
+  const head = md.slice(0, Math.floor(EXTRACT_MARKDOWN_CAP * 0.65));
+  const tail = md.slice(-Math.floor(EXTRACT_MARKDOWN_CAP * 0.35));
+  return `${head}\n\n…[middle elided]…\n\n${tail}`;
+}
+
+const EXTRACTION_SYSTEM =
+  "You extract a law firm's public business identity from the scraped markdown of THEIR OWN website. " +
+  "Return ONLY a single JSON object — no prose, no markdown fences. Use this exact shape and put null for " +
+  "anything you cannot find verbatim on the page (never guess or invent):\n" +
+  `{"firmFull":string|null,"attorneyFull":string|null,"phone":string|null,"addressLine":string|null,` +
+  `"city":string|null,"state":string|null,"zip":string|null,"logo":{"first":string,"accent":string,"suffix":string}|null}\n` +
+  "Rules: firmFull = the full firm name as written (e.g. 'Smith & Jones Injury Law'). attorneyFull = the lead/named " +
+  "attorney's full name (first + last only, no titles). phone = the primary phone formatted '(XXX) XXX-XXXX'. " +
+  "addressLine = street + suite ONLY (no city/state/zip). state = 2-letter USPS code. logo = a 3-way split of the " +
+  "firm name for the header wordmark: first = first word, accent = the highlighted middle word, suffix = the trailing " +
+  "word (usually 'Law' / 'Law Firm'); omit (null) if the name doesn't split cleanly into 3 parts.";
+
+function stripJson(text: string): string {
+  let s = (text || "").trim();
+  if (s.startsWith("```")) s = s.replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "").trim();
+  // Grab the outermost { … } in case the model adds stray text.
+  const a = s.indexOf("{"), b = s.lastIndexOf("}");
+  if (a !== -1 && b !== -1 && b > a) s = s.slice(a, b + 1);
+  return s;
+}
+
+async function extractIdentity(env: Bindings, markdown: string, pageUrl: string, title?: string): Promise<any> {
+  if (!env.OPENROUTER_API_KEY) throw new Error("OPENROUTER_API_KEY is not configured on the worker");
+  const openrouter = createOpenAI({ apiKey: env.OPENROUTER_API_KEY, baseURL: "https://openrouter.ai/api/v1" });
+  const result = await generateText({
+    model: openrouter("moonshotai/kimi-k2"),
+    system: EXTRACTION_SYSTEM,
+    temperature: 0,
+    messages: [{
+      role: "user",
+      content: `Page URL: ${pageUrl}\nPage title: ${title || "(none)"}\n\n--- SCRAPED MARKDOWN ---\n${clampForExtraction(markdown)}`,
+    }],
+  });
+  let parsed: any;
+  try {
+    parsed = JSON.parse(stripJson(result.text || ""));
+  } catch {
+    throw new Error("LLM did not return parseable JSON for the firm identity");
+  }
+  // Drop null/empty fields so overrides + required-check see only real values.
+  const clean: any = {};
+  for (const [k, v] of Object.entries(parsed || {})) {
+    if (v === null || v === undefined) continue;
+    if (k === "logo" && typeof v === "object") {
+      const lg = v as any;
+      if (lg.first && lg.accent) clean.logo = { first: lg.first, accent: lg.accent, suffix: lg.suffix || "Law" };
+      continue;
+    }
+    if (typeof v === "string" && v.trim()) clean[k] = v.trim();
+  }
+  return clean;
+}
+
+// ── POST /:id — swap with a caller-supplied target ───────────────────────────
 retargetRouter.post("/:id", async (c) => {
   const userId = c.get("userId");
   const sourceId = c.req.param("id");
-  const kv = c.env.KV_METADATA;
-  const r2 = c.env.R2_PROJECTS;
-
   try {
     const body = await c.req.json().catch(() => null);
     if (!body || !body.target || typeof body.target !== "object") {
       return c.json({ error: "Body must include a `target` identity object" }, 400);
     }
     const t = body.target;
-    for (const req of ["firmFull", "attorneyFull", "phone", "addressLine", "city", "state", "zip"]) {
-      if (typeof t[req] !== "string" || !t[req].trim()) {
-        return c.json({ error: `target.${req} is required` }, 400);
-      }
+    normalizeTarget(t);
+    const missing = missingRequired(t);
+    if (missing.length) {
+      return c.json({ error: `Missing required target fields: ${missing.join(", ")}`, missing }, 400);
     }
-    const createCopy = body.createCopy !== false; // default true
-
-    // Ownership + load latest version files.
-    const sourceStr = await kv.get(`user:${userId}:project:${sourceId}`);
-    if (!sourceStr) return c.json({ error: "Project not found" }, 404);
-    const source = JSON.parse(sourceStr);
-    const latestVersionStr = await kv.get(`project:${sourceId}:latest_version`);
-    if (!latestVersionStr) return c.json({ error: "Project has no versions" }, 422);
-    const srcObj = await r2.get(`${sourceId}/v${latestVersionStr}.json`);
-    if (!srcObj) return c.json({ error: "Source version data missing" }, 422);
-    const srcVersion = JSON.parse(await srcObj.text());
-    const files: Record<string, string> = { ...(srcVersion?.files || {}) };
-    const dependencies = srcVersion?.dependencies || {};
-    if (Object.keys(files).length === 0) {
-      return c.json({ error: "Source has no files" }, 422);
-    }
-
-    // Apply replacements globally, longest-match-first.
-    const reps = buildReplacements(t, body.extraReplacements);
-    const byRule: Record<string, number> = {};
-    let appliedTotal = 0;
-    for (const { rule, from, to } of reps) {
-      let hits = 0;
-      for (const path of Object.keys(files)) {
-        const n = countOccurrences(files[path], from);
-        if (n > 0) {
-          files[path] = files[path].split(from).join(to);
-          hits += n;
-        }
-      }
-      byRule[rule] = (byRule[rule] || 0) + hits;
-      appliedTotal += hits;
-    }
-
-    // Residual scan — any old identity still present is a swap gap.
-    const residualNeedles: Record<string, string> = {
-      "firm-name": ORLANDO.firmFull,
-      "attorney": ORLANDO.attorneyFull,
-      "phone-1": ORLANDO.phones[0],
-      "phone-2": ORLANDO.phones[1],
-      "address": ORLANDO.addressLine,
-      "city": ORLANDO.city,
-      "last-name": ORLANDO.attorneyLast,
-    };
-    const residuals: Record<string, { count: number; files: string[] }> = {};
-    for (const [label, needle] of Object.entries(residualNeedles)) {
-      let count = 0; const where: string[] = [];
-      for (const path of Object.keys(files)) {
-        const n = countOccurrences(files[path], needle);
-        if (n > 0) { count += n; where.push(path.split("/").pop() as string); }
-      }
-      if (count > 0) residuals[label] = { count, files: where };
-    }
-
-    // Orlando-specific images that were NOT overridden → need the client's asset.
-    const imagesNeedingReplacement: string[] = [];
-    for (const path of Object.keys(files)) {
-      for (const marker of ORLANDO.assetMarkers) {
-        const idx = files[path].indexOf(marker);
-        if (idx !== -1) {
-          // capture the surrounding URL token
-          const start = files[path].lastIndexOf("http", idx);
-          const end = Math.min(
-            ...["\"", "'", ")", " ", "\n"].map((ch) => {
-              const p = files[path].indexOf(ch, idx);
-              return p === -1 ? Number.MAX_SAFE_INTEGER : p;
-            }),
-          );
-          const url = start !== -1 && end !== Number.MAX_SAFE_INTEGER ? files[path].slice(start, end) : marker;
-          imagesNeedingReplacement.push(`${path.split("/").pop()} → ${url}`);
-        }
-      }
-    }
-
-    // Persist: new project (createCopy) or append-only new version in place.
-    const now = new Date().toISOString();
-    let targetProjectId = sourceId;
-    let newVersionNum: number;
-    let project: any;
-
-    if (createCopy) {
-      targetProjectId = nanoid(10);
-      newVersionNum = 1;
-      project = {
-        id: targetProjectId,
-        userId,
-        name: (typeof body.newProjectName === "string" && body.newProjectName.trim())
-          ? body.newProjectName.trim()
-          : t.firmFull,
-        description: `Retargeted from ${source.name}`,
-        createdAt: now,
-        updatedAt: now,
-      };
-      const versionData: Record<string, unknown> = {
-        version: 1, createdAt: now,
-        prompt: `Retargeted from ${source.name} → ${t.firmFull}`,
-        files,
-        ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
-      };
-      await r2.put(`${targetProjectId}/v1.json`, JSON.stringify(versionData));
-      await kv.put(`project:${targetProjectId}:latest_version`, "1");
-      await kv.put(`user:${userId}:project:${targetProjectId}`, JSON.stringify(project));
-    } else {
-      newVersionNum = parseInt(latestVersionStr) + 1;
-      const versionData: Record<string, unknown> = {
-        version: newVersionNum, createdAt: now,
-        prompt: `Retarget → ${t.firmFull} (${appliedTotal} replacements)`,
-        files,
-        ...(Object.keys(dependencies).length > 0 ? { dependencies } : {}),
-      };
-      await r2.put(`${sourceId}/v${newVersionNum}.json`, JSON.stringify(versionData));
-      await kv.put(`project:${sourceId}:latest_version`, newVersionNum.toString());
-      project = { ...source, updatedAt: now };
-      await kv.put(`user:${userId}:project:${sourceId}`, JSON.stringify(project));
-    }
-
-    console.log(`[Retarget] user=${userId} ${sourceId}→${targetProjectId} v${newVersionNum} firm="${t.firmFull}" applied=${appliedTotal} residualKeys=${Object.keys(residuals).length}`);
-
-    return c.json({
-      project,
-      sourceId,
-      newVersion: newVersionNum,
-      createdCopy: createCopy,
-      appliedTotal,
-      byRule,
-      residuals,
-      imagesNeedingReplacement,
-    }, 201);
+    const result = await performRetarget(c.env, userId, sourceId, t, {
+      createCopy: body.createCopy !== false,
+      newProjectName: body.newProjectName,
+      extraReplacements: body.extraReplacements,
+    });
+    return c.json(result.body, result.status);
   } catch (error) {
     console.error("Retarget error:", error);
     return c.json({ error: "Failed to retarget project" }, 500);
+  }
+});
+
+// ── POST /:id/from-url — scrape a firm's site, extract identity, then swap ────
+retargetRouter.post("/:id/from-url", async (c) => {
+  const userId = c.get("userId");
+  const sourceId = c.req.param("id");
+  try {
+    const body = await c.req.json().catch(() => null);
+    const sourceUrl = (body?.sourceUrl || "").toString().trim();
+    if (!/^https?:\/\//i.test(sourceUrl)) {
+      return c.json({ error: "Body must include a `sourceUrl` starting with http:// or https://" }, 400);
+    }
+
+    // 1) Scrape the target firm's site.
+    let scraped: { markdown: string; title?: string; statusCode?: number };
+    try {
+      scraped = await scrapeMarkdown(c.env, sourceUrl);
+    } catch (e: any) {
+      return c.json({ error: `Scrape failed: ${e?.message || String(e)}` }, 502);
+    }
+
+    // 2) Extract the firm identity with the LLM.
+    let extracted: any;
+    try {
+      extracted = await extractIdentity(c.env, scraped.markdown, sourceUrl, scraped.title);
+    } catch (e: any) {
+      return c.json({ error: `Identity extraction failed: ${e?.message || String(e)}`, sourceMeta: { title: scraped.title } }, 502);
+    }
+
+    // 3) Caller overrides win over anything scraped.
+    const overrides = (body?.overrides && typeof body.overrides === "object") ? body.overrides : {};
+    const target: any = { ...extracted, ...overrides };
+    normalizeTarget(target);
+
+    const sourceMeta = { url: sourceUrl, title: scraped.title, statusCode: scraped.statusCode, markdownChars: scraped.markdown.length };
+    const missing = missingRequired(target);
+
+    // Preview mode, or not enough data → return what we found, don't swap.
+    if (body?.dryRun === true || missing.length) {
+      return c.json({
+        dryRun: body?.dryRun === true,
+        extracted,
+        target,
+        missing,
+        sourceMeta,
+        ...(missing.length ? { error: `Could not extract: ${missing.join(", ")} — supply via overrides or fix the source URL.` } : {}),
+      }, missing.length ? 422 : 200);
+    }
+
+    // 4) Swap.
+    const result = await performRetarget(c.env, userId, sourceId, target, {
+      createCopy: body.createCopy !== false,
+      newProjectName: body.newProjectName,
+      extraReplacements: body.extraReplacements,
+    });
+    return c.json({ ...result.body, extracted, target, sourceMeta }, result.status);
+  } catch (error) {
+    console.error("Retarget from-url error:", error);
+    return c.json({ error: "Failed to retarget project from URL" }, 500);
   }
 });
 
