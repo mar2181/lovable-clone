@@ -1,0 +1,16 @@
+{
+  "name": "@hs/builder-sdk",
+  "version": "0.1.0",
+  "description": "Typed client for the HS Web App Builder API",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc"
+  },
+  "license": "UNLICENSED"
+}
