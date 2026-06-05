@@ -17,6 +17,7 @@ import shareRouter from "./routes/share";
 import supabaseRouter from "./routes/supabase";
 import attachmentsRouter from "./routes/attachments";
 import improvePromptRouter from "./routes/improve-prompt";
+import retargetRouter from "./routes/retarget";
 
 // Define the environment variables / bindings for the Worker
 export type Bindings = {
@@ -103,6 +104,7 @@ app.route("/api/share", shareRouter);
 app.route("/api/supabase", supabaseRouter);
 app.route("/api/attachments", attachmentsRouter);
 app.route("/api/improve-prompt", improvePromptRouter);
+app.route("/api/retarget", retargetRouter);
 
 app.get("/", (c) => {
   return c.text("HS Solutions API is running!");
