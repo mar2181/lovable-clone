@@ -87,7 +87,18 @@ export function PetConcierge() {
     const script = document.createElement("script");
     script.src = PET_CONCIERGE_URL;
     script.setAttribute("data-token", GARY_AGENT_ID);
-    script.setAttribute("data-name", "Gary");
+    // ── SELF-HOSTED CUTOVER (2026-06-05) — voice + brain on OUR GPU box ──────
+    // Mirrors the proven SPI/Sugar config: routes this pet's voice + brain
+    // through our Chatterbox box (Will voice + faster-whisper + OpenRouter) over
+    // the Daily transport instead of ElevenLabs. The broker
+    // (petconcierge.vercel.app/api/voice-session) mints an HMAC session token
+    // from the petbuddy_agents row keyed to GARY_AGENT_ID and the box serves
+    // persona / nav / voice from that token. "/boxapi" is a same-origin proxy to
+    // the pod (the box has no CORS — see next.config.ts rewrites). INSTANT
+    // ROLLBACK: delete these two lines → the embed resolves ElevenLabs again.
+    script.setAttribute("data-backend", "selfhosted");
+    script.setAttribute("data-connect-url", "/boxapi");
+    script.setAttribute("data-name", "Space Mario");
     script.setAttribute("data-accent", "#a855f7");
     script.setAttribute("data-sprite-src", GARY_SPRITE);
     script.setAttribute("data-worker", WORKER_URL);
@@ -95,7 +106,7 @@ export function PetConcierge() {
     script.setAttribute("data-wander", "true");
     script.setAttribute(
       "data-greeting",
-      "Hi! I'm Gary, your build buddy. Want to spin up a new app, or shall we dig into the one you're already in?"
+      "Hey, I'm Space Mario, your build buddy. Want to spin up a new app, or dig into the one you're already in?"
     );
     script.async = true;
     document.body.appendChild(script);
