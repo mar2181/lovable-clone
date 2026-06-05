@@ -172,12 +172,31 @@ vercelRouter.post("/deploy", async (c) => {
       } catch { /* fall through to default */ }
     }
     const idTail = projectId ? String(projectId).slice(0, 8) : "app";
-    const vercelProjectName = (projectSlug ? `${projectSlug}-${idTail}` : `lovable-${idTail}`)
+    let vercelProjectName = (projectSlug ? `${projectSlug}-${idTail}` : `lovable-${idTail}`)
       .toLowerCase()
       .replace(/[^a-z0-9-]/g, "-")
       .replace(/-+/g, "-")
       .replace(/^-+|-+$/g, "")
       .slice(0, 52); // Vercel project name max ≈ 100, keep headroom
+
+    // Identity persistence: the v13 deployments API routes a deploy to a Vercel
+    // project by `name`, creating one if it doesn't exist. If the user renames
+    // the project the computed name changes and Vercel would spin up a SECOND
+    // project (a duplicate, orphaning the first + its production domain). So on
+    // the first successful deploy we remember the project name we used, and on
+    // every later deploy we reuse it regardless of the current display name.
+    const vercelKey =
+      projectId && userId ? `project:${projectId}:vercel_project_id` : null;
+    let reusedVercelProject = false;
+    if (vercelKey) {
+      try {
+        const savedName = await c.env.KV_METADATA.get(vercelKey);
+        if (savedName) {
+          vercelProjectName = savedName;
+          reusedVercelProject = true;
+        }
+      } catch { /* fall through with the freshly computed name */ }
+    }
 
     const projectFiles = files as Record<string, string>;
     const vercelFiles: Array<{ file: string; data: string }> = [];
@@ -518,6 +537,18 @@ export default function App() {
     };
     let state = (await deployRes.json()) as DeploymentState;
 
+    // The deploy POST was accepted, so the Vercel project named
+    // `vercelProjectName` now exists. Pin it to this project so future deploys
+    // (even after a rename) target the same project instead of duplicating.
+    // Best-effort: a KV failure must not break an otherwise-successful deploy.
+    if (vercelKey && !reusedVercelProject) {
+      try {
+        await kv.put(vercelKey, vercelProjectName);
+      } catch (e) {
+        console.error("Failed to persist vercel_project_id key:", e);
+      }
+    }
+
     // Poll until the deployment finishes building. We cannot return the URL
     // before READY because (a) the per-deploy URL serves a Vercel "deploying"
     // page during build, and (b) the production alias does not resolve at all
@@ -566,6 +597,8 @@ export default function App() {
         previewUrl: `https://${state.url}`,
         aliases: [],
         deploymentId: state.id,
+        vercelProjectName,
+        reusedExisting: reusedVercelProject,
         status: state.readyState,
         warning: "Deployment still building after 3 minutes — returning per-deploy URL. Production alias will catch up when build completes.",
       });
@@ -584,6 +617,8 @@ export default function App() {
       previewUrl: `https://${state.url}`,
       aliases: aliases.map((a) => `https://${a}`),
       deploymentId: state.id,
+      vercelProjectName,
+      reusedExisting: reusedVercelProject,
       status: state.readyState,
     });
   } catch (error) {

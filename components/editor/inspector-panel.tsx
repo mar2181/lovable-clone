@@ -9,6 +9,7 @@ import { useSelectStore } from "@/lib/select-store";
 import { useAuth } from "@/lib/dev-auth";
 import { WORKER_URL } from "@/lib/constants";
 import { validateAttachmentFile, uploadAttachment } from "@/lib/upload";
+import { SupabaseImagePicker } from "@/components/editor/supabase-image-picker";
 
 interface InspectorPanelProps {
   projectId: string;
@@ -206,9 +207,22 @@ export function InspectorPanel({ projectId, onApplied, onOpenCode }: InspectorPa
             <Input
               value={imgUrlDraft}
               onChange={(e) => setImgUrlDraft(e.target.value)}
-              placeholder="https://… or upload below"
+              placeholder="https://… or pick / upload below"
               className="bg-zinc-950/60 border-white/10 text-xs text-white font-mono"
             />
+            <div>
+              <label className="text-[11px] uppercase tracking-wide text-zinc-500 font-medium block mb-1.5">
+                From this project
+              </label>
+              <SupabaseImagePicker
+                projectId={projectId}
+                selectedUrl={imgUrlDraft}
+                onSelect={(url) => {
+                  setImgUrlDraft(url);
+                  setErrMsg(null);
+                }}
+              />
+            </div>
             <div className="flex items-center gap-2">
               <input
                 ref={fileInputRef}

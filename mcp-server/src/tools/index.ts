@@ -8,6 +8,8 @@ import { getVersionsTool } from "./get-versions.js";
 import { exportProjectTool } from "./export-project.js";
 import { pushGithubTool } from "./push-github.js";
 import { deployVercelTool } from "./deploy-vercel.js";
+import { retargetSiteTool } from "./retarget-site.js";
+import { retargetSiteManualTool } from "./retarget-site-manual.js";
 
 export const tools = [
   healthCheckTool,
@@ -19,4 +21,6 @@ export const tools = [
   exportProjectTool,
   pushGithubTool,
   deployVercelTool,
+  retargetSiteTool,
+  retargetSiteManualTool,
 ];

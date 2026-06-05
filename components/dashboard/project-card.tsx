@@ -1,6 +1,9 @@
+"use client";
+
+import { useState } from "react";
 import Link from "next/link";
 import { formatDistanceToNow } from "date-fns";
-import { FolderGit2, Clock, ArrowRight, MoreVertical, Trash, Edit2, Loader2, Copy } from "lucide-react";
+import { FolderGit2, Clock, ArrowRight, MoreVertical, Trash, Edit2, Loader2, Copy, Wand2 } from "lucide-react";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -8,6 +11,7 @@ import {
   DropdownMenuTrigger
 } from "@/components/ui/dropdown-menu";
 import { Button } from "@/components/ui/button";
+import { RetargetDialog } from "@/components/dashboard/retarget-dialog";
 
 interface Project {
   id: string;
@@ -26,6 +30,8 @@ interface ProjectCardProps {
 }
 
 export function ProjectCard({ project, onDelete, isDeleting, onClone }: ProjectCardProps) {
+  const [retargetOpen, setRetargetOpen] = useState(false);
+
   const menu = (
     <DropdownMenu>
       <DropdownMenuTrigger
@@ -51,6 +57,16 @@ export function ProjectCard({ project, onDelete, isDeleting, onClone }: ProjectC
           Duplicate
         </DropdownMenuItem>
         <DropdownMenuItem
+          className="hover:bg-white/10 hover:text-white cursor-pointer"
+          onClick={(e) => {
+            e.stopPropagation();
+            setRetargetOpen(true);
+          }}
+        >
+          <Wand2 className="w-4 h-4 mr-2" />
+          Re-target to a URL
+        </DropdownMenuItem>
+        <DropdownMenuItem
           className="text-destructive focus:text-destructive focus:bg-destructive/10 cursor-pointer"
           onClick={(e) => {
             e.stopPropagation();
@@ -70,6 +86,7 @@ export function ProjectCard({ project, onDelete, isDeleting, onClone }: ProjectC
   );
 
   return (
+    <>
     <div className="group relative flex flex-col p-6 rounded-2xl bg-white/5 border border-white/10 backdrop-blur-sm hover:bg-white/10 transition-all cursor-pointer overflow-hidden">
       {/* Background glow effect on hover */}
       <div className="absolute inset-0 bg-gradient-to-br from-primary/10 to-transparent opacity-0 group-hover:opacity-100 transition-opacity" />
@@ -119,5 +136,12 @@ export function ProjectCard({ project, onDelete, isDeleting, onClone }: ProjectC
       {/* Make the entire card clickable, except dropdown */}
       <Link href={`/editor/${project.id}`} className="absolute inset-0 z-0" aria-label={`Open ${project.name}`} />
     </div>
+
+    <RetargetDialog
+      project={retargetOpen ? { id: project.id, name: project.name } : null}
+      open={retargetOpen}
+      onOpenChange={setRetargetOpen}
+    />
+    </>
   );
 }
