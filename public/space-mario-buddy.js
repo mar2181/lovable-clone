@@ -136,6 +136,21 @@
         }).filter(Boolean);
         if (!stops.length) return 'I could not find any of those stops on this page.';
         return withBody(function (b) { b.tour(stops, { onStep: function () {} }); return 'Starting the tour — ' + stops.length + ' stops. Narrate as I fly.'; });
+      },
+      // ── MAP MODE (hands-free numbered nav). The editor's MapModeController
+      // exposes window.__MapMode while it's mounted; the pet just toggles it and
+      // goes quiet so the page's own dictation drives. Editor-only by design.
+      enter_map_mode: function () {
+        var mm = window.__MapMode;
+        if (!mm || typeof mm.enter !== 'function') return 'Map mode lives inside the app editor — open or create a project first, then say "map mode" and I will turn it on.';
+        if (typeof mm.isOn === 'function' && mm.isOn()) return 'Map mode is already on. Say a number to act on it, "send" to commit a field, or "map mode off" to leave.';
+        mm.enter();
+        return 'Map mode on — every clickable now has a number. I will stay quiet: say the number you want, add words after a number to type into it, "send" to commit, and "map mode off" when you are done.';
+      },
+      exit_map_mode: function () {
+        var mm = window.__MapMode;
+        if (mm && typeof mm.exit === 'function') mm.exit();
+        return 'Map mode off — back to normal. What would you like to do?';
       }
     };
     for (var k in tools) { if (!(k in host)) host[k] = tools[k]; }

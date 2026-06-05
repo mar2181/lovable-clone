@@ -666,6 +666,22 @@ export function MapModeController() {
     pushLog("🎤 stopped listening");
   }, [pushLog]);
 
+  /* ── expose Map Mode to the voice pet (enter_map_mode / exit_map_mode tools) ──
+   * public/space-mario-buddy.js calls window.__MapMode. Defined ONLY while this
+   * editor controller is mounted, so the pet only offers map mode where it works.
+   * enter() also auto-starts the numbered dictation so the user can speak numbers
+   * immediately; the pet goes silent (per its prompt) and this layer drives. */
+  useEffect(() => {
+    const w = window as unknown as { __MapMode?: Record<string, unknown> };
+    w.__MapMode = {
+      enter: () => { setMapMode(true); startListen(); },
+      exit: () => { setMapMode(false); stopListen(); },
+      toggle: () => setMapMode(!useMapModeStore.getState().isMapMode),
+      isOn: () => useMapModeStore.getState().isMapMode,
+    };
+    return () => { w.__MapMode = undefined; };
+  }, [setMapMode, startListen, stopListen]);
+
   const pttStart = useCallback(() => {
     if (listeningRef.current) return;
     const r = ensureRec(); if (!r) return;
