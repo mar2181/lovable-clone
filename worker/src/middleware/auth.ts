@@ -1,6 +1,6 @@
 import { Context, Next } from "hono";
 import { jwtVerify, createRemoteJWKSet, type JWTPayload } from "jose";
-import { registerOwnerIfAdmin } from "../services/credits";
+import { registerOwnerIfAdmin, isOwnerEmail } from "../services/credits";
 
 // JWKS is cached across requests within a worker instance. jose's
 // createRemoteJWKSet handles its own internal caching; we memoize the
@@ -125,15 +125,43 @@ export async function authMiddleware(c: Context, next: Next) {
     return c.json({ error: "Unauthorized — missing subject claim" }, 401);
   }
 
-  c.set("userId", payload.sub);
-
-  // Register owner/admin accounts for unlimited credits.
-  // (The owner cache is in-process; this is best-effort and re-runs per cold start.)
-  const email =
+  let email =
     (payload as any).email ||
     (payload as any).primary_email ||
     (payload as any).email_addresses?.[0]?.email_address;
-  registerOwnerIfAdmin(payload.sub, email);
+
+  // Clerk's DEFAULT session token does not carry an email claim. When it's
+  // absent, resolve it from the Clerk Backend API by subject id so owner-remap
+  // still fires reliably (best-effort; never blocks auth on a lookup failure).
+  if (!email && c.env.CLERK_SECRET_KEY) {
+    try {
+      const lookup = await fetch(`https://api.clerk.com/v1/users/${payload.sub}`, {
+        headers: { Authorization: `Bearer ${c.env.CLERK_SECRET_KEY}` },
+      });
+      if (lookup.ok) {
+        const u: any = await lookup.json();
+        email =
+          u?.email_addresses?.find((e: any) => e.id === u.primary_email_address_id)?.email_address ||
+          u?.email_addresses?.[0]?.email_address;
+      } else {
+        console.warn(`[Auth] Clerk user lookup failed: ${lookup.status}`);
+      }
+    } catch (err) {
+      console.warn("[Auth] Clerk user lookup error:", String(err));
+    }
+  }
+
+  // The legacy single-operator workspace (47 projects) lives under the
+  // "dev-local-user" namespace. Map the owner's real Clerk identity onto that
+  // namespace so retiring the public dev-bypass does NOT orphan their work —
+  // zero data migration. Non-owner users keep their own Clerk subject id.
+  const uid = isOwnerEmail(email) ? "dev-local-user" : payload.sub;
+  c.set("userId", uid);
+
+  // Register owner/admin accounts for unlimited credits.
+  // (The owner cache is in-process; this is best-effort and re-runs per cold start.)
+  registerOwnerIfAdmin(uid, email);
+  console.log(`[Auth] Clerk verified sub=${payload.sub} email=${email ?? "?"} -> uid=${uid}`);
 
   await next();
 }

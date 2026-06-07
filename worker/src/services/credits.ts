@@ -1,7 +1,11 @@
 import { Bindings } from "../index";
 
-// In development, credits are unlimited
-const UNLIMITED_DEV_CREDITS = true;
+// Unlimited credits are reserved for owner/admin accounts only (see isOwner).
+// This was previously `true`, which granted EVERY authenticated user unlimited
+// credits — fine while the only way in was the dev-bypass, but a credit-burn
+// abuse vector once real Clerk sign-up is enabled. Non-owners now fall through
+// to the metered path (10 free credits, then KV-tracked balance).
+const UNLIMITED_DEV_CREDITS = false;
 
 // Owner/admin emails — these accounts ALWAYS get unlimited credits in any environment
 const OWNER_EMAILS = new Set([
@@ -11,9 +15,14 @@ const OWNER_EMAILS = new Set([
 // Cache of admin user IDs (resolved from email on first auth hit)
 const ownerUserIds = new Set<string>();
 
+/** True if this email is an owner/admin (case-insensitive). */
+export function isOwnerEmail(email?: string | null): boolean {
+  return !!email && OWNER_EMAILS.has(email.toLowerCase());
+}
+
 /** Call this from auth middleware to register owner accounts by email */
 export function registerOwnerIfAdmin(userId: string, email?: string | null) {
-  if (email && OWNER_EMAILS.has(email.toLowerCase())) {
+  if (isOwnerEmail(email)) {
     ownerUserIds.add(userId);
   }
 }
