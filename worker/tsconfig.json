@@ -16,5 +16,6 @@
     "skipLibCheck": true
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "dist"]
+  "// exclude note": "src/ai/runtime holds browser-injected reference code (DOM globals); it is shipped as a string from default-project.ts, never imported by the worker, so it must not be typechecked against @cloudflare/workers-types.",
+  "exclude": ["node_modules", "dist", "src/ai/runtime"]
 }
