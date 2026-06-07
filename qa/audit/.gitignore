@@ -1,0 +1,4 @@
+# Transient machine artifacts regenerated every audit run — keep the .md reports, ignore the JSON noise.
+reports/*-probe.json
+reports/*-selfheal.json
+reports/latest-probe.json
