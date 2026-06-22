@@ -109,6 +109,14 @@ ESLint: `Cannot access variable before it is declared` — `fetchTemplates` is c
 
 ---
 
+### P2 — 38 Dependabot vulnerabilities on master (5 HIGH, 28 moderate, 5 low) [ESCALATED]
+
+At push time, GitHub flagged **38 vulnerabilities on the default branch** — up from 10 moderate at last report (2026-06-07). 5 are now rated HIGH severity.
+
+**Fix:** Review the Dependabot security tab at `https://github.com/mar2181/lovable-clone/security/dependabot`. Merge PR #28 (hono + esbuild bump, already open) as a first step; that likely resolves some. For remaining advisories, accept safe lock-file-only Dependabot PRs or apply manual patches.
+
+---
+
 ### P3 — ESLint: +2 new problems (236 vs baseline 234)
 
 Total: 236 problems, 156 errors, 80 warnings, 2 auto-fixable. The 2 new problems are the `template-picker.tsx:80` error and one additional warning. The 80 warnings match baseline exactly.
