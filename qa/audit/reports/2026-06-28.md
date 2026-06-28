@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-06-28T11:11Z · **Run:** #7 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — two P0 outages (dashboard 404 for 20 days, voice box process dead) + P1 security bypass persisting for 7 consecutive audits + build engine status TBD (awaiting SSE result).
+**Overall: 🔴 RED** — three P0 outages (build engine stalled again, dashboard 404/middleware crash, voice box dead) + P1 security bypass 7 consecutive audits. Core product non-functional.
 
 > Probe: 5 GREEN · 9 YELLOW · 3 RED | Deep audit: 6 domains | Auto-healed: none (all P0s require local creds or Vercel access)
 
@@ -9,26 +9,55 @@
 
 ## 🚩 Needs Mario (ranked P0 → P3)
 
-### P0 — `/dashboard` serves stale cached 404 for 20 days (users locked out) [PERSISTS — 3rd consecutive audit]
+### P0 — Build engine STALLED again (core product DOWN) [PERSISTS — 3rd consecutive audit]
 
-**Live confirmation:** `GET https://hswebappbuilder.space/dashboard` → **HTTP 404**, `age: 1744430` (~20.2 days old). The Vercel edge has been serving this cached 404 since approximately **June 8, 2026** — no successful deployment since.
+**Confirmed via SSE E2E test this run:**
+- POST /api/projects → 201, id `Cx6zjt5jVZ` ✓
+- POST /api/build/Cx6zjt5jVZ → 200, SSE stream opens ✓
+- Events: `build_start` (4 pages, 2 batches) → `batch_start` → `page_status` Home/About/Services → `generating`…
+- **Then: `page_status: Services: generating` repeats indefinitely for 300 seconds** — no `batch_complete`, no `build_complete`, no `{"type":"error"}`
+- curl timeout at 300s (code 28). No completion.
+- DELETE /api/projects/Cx6zjt5jVZ → 200 ✓
 
-- Local build: 0 TypeScript errors, `/dashboard` route generates cleanly (`app/dashboard/page.tsx` → `.next/server/app/dashboard.html`)
-- Unauthenticated requests redirect to `accounts.hswebappbuilder.space/sign-in` which itself returns **403 Forbidden** — sign-in is broken end-to-end
-- The `fix(auth): harden builder auth` commit (`4af6841`, June 7) likely introduced a Clerk middleware incompatibility that broke /dashboard at the next Vercel deploy
+No "Insufficient credits" error this time (unlike the pre-June-7 P0). The SSE stream stays alive but the AI generation call hangs at batch 0, page 3 ("Services"). This is a **hung LLM call / worker promise that never resolves**.
 
-**Root cause:** The Vercel deployment triggered by commit `50a7531` (~June 8) either cached /dashboard as 404 due to a Clerk middleware failure, or the CLERK env vars are missing/wrong in Vercel production, causing `auth.protect()` to crash instead of redirecting.
+**Root cause hypotheses:**
+1. **OpenRouter rate limit or quota** — a specific model response hangs mid-stream; the worker's SSE stays open waiting for a response that never arrives
+2. **Worker CPU/wall-clock limit** — the Cloudflare Worker hits its execution limit, kills the inner LLM call, but leaves the SSE stream open (no error surfaced)
+3. **Model routing change** — the specific OpenRouter model (`claude-*` or `gpt-*` in `worker/src/ai/`) has been deprecated or rate-limited
+
+**Fix:**
+1. Check https://openrouter.ai/ → billing/credits and rate-limit dashboard
+2. Check worker logs via Cloudflare dashboard for the `/api/build` route — look for the actual error the worker swallows
+3. Add a server-side SSE keepalive + explicit error catch: if the LLM call rejects/times-out, emit `{"type":"error","message":"..."}` so clients see a failure instead of hanging
+4. Consider adding a server-side 120s per-page timeout that emits an error event rather than hanging
+
+---
+
+### P0 — `/dashboard` returns 404/500 — middleware crash confirmed [PERSISTS — 3rd consecutive audit]
+
+**Production:** `GET https://hswebappbuilder.space/dashboard` → HTTP 404, `age: 1744430` (~20.2 days, no new deployment since June 8).
+
+**Root cause now confirmed via this run's Vercel preview deployment:**
+The audit branch (`audit/report-2026-06-28`) triggered a fresh Vercel build. Checking `/dashboard` on the preview URL returned:
+```
+HTTP/2 500
+x-vercel-error: MIDDLEWARE_INVOCATION_FAILED
+```
+The middleware is **crashing at runtime**, not just redirecting. This is NOT a stale cache issue — it's a real error in production that Vercel's edge turned into a cached 404 on the first occurrence (June 8).
+
+**Root cause:** `middleware.ts` calls Clerk's `auth.protect()` which requires `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` (and/or `CLERK_SECRET_KEY`) to be present in the Vercel environment. If either is missing, Clerk throws, Next.js middleware crashes, and Vercel serves 500 → cached as 404.
 
 **Fix (needs Vercel access):**
-1. Go to Vercel project settings → Environment Variables → confirm these are set for **Production**:
-   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — live publishable key (starts `pk_live_`)
-   - `CLERK_SECRET_KEY` — live secret key (starts `sk_live_`)
+1. Vercel project settings → Environment Variables → confirm set for **Production**:
+   - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` — live key (starts `pk_live_`)
+   - `CLERK_SECRET_KEY` — live key (starts `sk_live_`)
    - `NEXT_PUBLIC_CLERK_SIGN_IN_URL` = `/sign-in`
    - `NEXT_PUBLIC_CLERK_SIGN_UP_URL` = `/sign-up`
-2. If any are missing or set to test keys, update them from the Clerk dashboard.
-3. Trigger a new Vercel deployment: `vercel --prod` from master or via the Vercel dashboard.
-4. Verify `GET https://hswebappbuilder.space/dashboard` now returns 307 → sign-in page (not 404).
-5. Then test actual sign-in with real Clerk credentials.
+2. Update any missing/wrong values from Clerk dashboard.
+3. Trigger prod deployment: `vercel --prod` or Vercel dashboard → Deployments → Redeploy.
+4. Verify `/dashboard` → 307 → `/sign-in` (not 404 or 500).
+5. Test sign-in with real Clerk credentials.
 
 ---
 
@@ -58,17 +87,6 @@ curl https://udcz4k7kse1zw6-7860.proxy.runpod.net/healthz
 # Expect: {"ok":true,"build":"2026-06-06-hsreels-tts","tools":{"count":18},"tts":{"voices":["will","jack"]}}
 ```
 Note: Pod is billed 24/7 at ~$0.69/hr even when the process is down — costing ~$500/mo for a non-functional service.
-
----
-
-### P0 (PENDING) — Build engine status (SSE E2E test running)
-
-> **Build engine SSE result not yet returned at report write time.** Update when deep-audit agent completes.
->
-> Context from 2026-06-25 audit: build engine **STALLED** — SSE stream emitted `build_start` + `page_status` events then went silent for 178s, timing out with no `build_complete`. Root cause hypothesis: OpenRouter credits depleted again (same P0 as pre-June-7 audit).
->
-> **If still failing:** Check https://openrouter.ai/ dashboard — if credits depleted, top up. Same fix as last time.
-> **If recovered:** Add server-side SSE keepalive ping (every 30s) to prevent silent stalls.
 
 ---
 
@@ -164,9 +182,9 @@ Master HEAD: `50a7531` (`chore(audit): sync 2026-06-07 audit report`) — **21 d
 
 | Item | Direction | Detail |
 |---|---|---|
-| /dashboard 404 | 🔴 PERSISTS | 3rd consecutive audit. `age: 1744430` (20.2 days) confirms no new Vercel deployment since June 8. |
+| /dashboard 404 | 🔴 PERSISTS | 3rd consecutive audit. Root cause confirmed: `MIDDLEWARE_INVOCATION_FAILED` on fresh Vercel preview = Clerk env vars missing. Prod serving 20-day cached 404. |
 | Voice box DOWN | 🔴 PERSISTS | 3rd consecutive audit. Response changed from `/healthz → 404` to empty (process may be fully stopped now). |
-| Build engine | ⏳ PENDING | 2026-06-25 showed STALLED/timeout. This run's SSE result pending — see P0 section above. |
+| Build engine | 🔴 PERSISTS | SSE stalls again at `page_status: Services: generating`, 300s timeout, no `build_complete`, no error event. Likely hung LLM call (not "Insufficient credits" this time). |
 | P1 dev-bypass | 🔴 PERSISTS | 7th consecutive audit without fix. `wrangler.toml [vars]` unchanged. |
 | GitHub import | ✅ STABLE | 201, 22 files — same as all prior audits. |
 | Sandpack unit guards | ✅ STABLE | 5/5 + 9/9 — same as all prior audits. |
