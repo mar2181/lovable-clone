@@ -135,6 +135,7 @@ DEV_BYPASS_AUTH = "1"
 |---|---|---|---|---|
 | **`claude/builder-buddy-rail`** | ~27 days | Docked Space Mario assistant rail (`buddy-panel.tsx`, `pc-embed.js`), re-pointed to live pod endpoint | **BRING IN FOR REVIEW** (unchanged rec from #4) | Live pod re-pointed 2026-06-04; functional. Awaiting human review. |
 | **`dependabot/npm_and_yarn/npm_and_yarn-5984bbb696`** | NEW | Bumps 2 packages across 3 directories (lock-file changes) | **REVIEW + MERGE if tests pass** | Security/patch bump; automatic. No functional code change expected. |
+| **GitHub security dashboard** | NEW | 43 Dependabot advisories on master: **5 high, 30 moderate, 8 low** (up from 10 moderate in audit #4) | **URGENT: review at https://github.com/mar2181/lovable-clone/security/dependabot** | 5 HIGH advisories require priority attention. |
 | **`audit/report-*`** (6 branches) | 3–21 days | Audit reports only | **ARCHIVE** (delete) once report branch for this run is merged | Pure metadata; no code changes. |
 
 Branches from previous audit now absent (resolved): `fix/sanitizer-icon-imports`, `archive/windows-side-2026-05-11`, `backup/pr13-pre-resolve-2026-05-12` — all archived or merged. ✅
