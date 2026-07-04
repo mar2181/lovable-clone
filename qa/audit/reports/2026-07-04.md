@@ -115,6 +115,20 @@ curl https://udcz4k7kse1zw6-7860.proxy.runpod.net/healthz  # expect ok:true, too
 
 ---
 
+### P1/P2 — 43 Dependabot Vulnerabilities on master (ESCALATION — was 10 moderate in #2)
+
+GitHub push notification: **43 vulnerabilities on the default branch — 5 HIGH, 30 moderate, 8 low.**
+
+This is a significant escalation from the 10 moderate advisories flagged in audit #2 (June 7). 5 HIGH-severity vulnerabilities have appeared.
+
+**Fix:**
+1. Review advisories: `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. PR #28 (`dependabot/npm_and_yarn/npm_and_yarn-5984bbb696`) addresses 2 of them — review and merge if safe.
+3. For remaining advisories, accept Dependabot's auto-PRs for any that are safe lock-file-only upgrades.
+4. HIGH-severity advisories should be addressed within 7 days.
+
+---
+
 ## 🩹 Hygiene Backlog (P3 — batched)
 
 - **Next.js `middleware` → `proxy` rename** — `npm run build` still emits: *"The 'middleware' file convention is deprecated. Please use 'proxy' instead."* `middleware.ts` exists, `proxy.ts` does not. Flagged since #2. Fix: `git mv middleware.ts proxy.ts` + update any imports.
