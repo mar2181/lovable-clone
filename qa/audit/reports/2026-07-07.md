@@ -109,9 +109,11 @@ ESLint `react-hooks/immutability` flags these as errors. Can cause cascading re-
 
 ---
 
-### P2 — 9 npm audit vulnerabilities (1 high) [NEW]
+### P2 — 43 Dependabot vulnerabilities on master (5 high) [WORSENED]
 
-`npm audit` reports: 2 low, 6 moderate, 1 high. Run `npm audit` locally for the full list. The 1 high-severity vulnerability warrants immediate attention. Accept any Dependabot PRs for safe lock-file-only upgrades.
+GitHub Dependabot reports **43 vulnerabilities** on the default branch: **5 high, 30 moderate, 8 low** (confirmed via push output). `npm audit` locally surfaced 9 — GitHub's advisory database is more comprehensive. This has grown since the last report (was 10 moderate at 2026-06-07).
+
+**Fix:** Visit `https://github.com/mar2181/lovable-clone/security/dependabot` and review each advisory. Accept Dependabot PRs for safe lock-file-only upgrades. The 5 high-severity advisories warrant immediate review.
 
 ---
 
