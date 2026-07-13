@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-07-13T11:10Z · **Run:** #12 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — Voice box remains down (7+ days). P1 dev-bypass persists (run #12, day 36). Build engine RESTORED (was P0 in run #11). New P2: `/dashboard` returns true 404 in prod.
+**Overall: 🔴 RED** — Voice box P0 (7+ days down). 5 HIGH Dependabot vulns on master (escalated from 10 moderate). P1 dev-bypass persists (day 36). Build engine RESTORED (was P0 run #11). New P2: `/dashboard` true 404 in prod.
 
 > Probe: 5 GREEN · 9 YELLOW · 3 RED  |  Deep audit: 6 domains  |  Auto-healed: none (no cloud creds)
 
@@ -72,6 +72,20 @@ Both vars are in `[vars]` (deployed to prod). Either one alone enables the bypas
 2. If stale or failed: Trigger a redeploy of master HEAD (`50a7531`).
 3. If CDN cached a stale 404: Purge Vercel edge cache for `/dashboard`.
 4. Verify: `curl -L https://hswebappbuilder.space/dashboard` → 307 redirect to `/sign-in` (Clerk auth).
+
+---
+
+### P1 — 43 Dependabot vulnerabilities on master (5 HIGH) [ESCALATED]
+
+GitHub push output: *"GitHub found 43 vulnerabilities on mar2181/lovable-clone's default branch (5 high, 30 moderate, 8 low)."*
+
+**Escalation from run #2 (2026-06-07):** was 10 moderate. Now 5 HIGH + 30 moderate + 8 low = 43 total. The 5 HIGH advisories may include RCE or auth-bypass vectors in dependencies.
+
+**Fix:**
+1. Check: `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. Accept Dependabot PRs for safe lock-file-only bumps.
+3. Manually review HIGH-severity advisories — any that require API changes need a separate branch.
+4. The pending `dependabot/npm_and_yarn/npm_and_yarn-5984bbb696` branch should be merged as a first step (safe toolchain bump).
 
 ---
 
@@ -161,7 +175,7 @@ Master HEAD: `50a7531` (2026-06-07 audit sync) — **no code changes in 36 days.
 | **`dependabot/npm_and_yarn/npm_and_yarn-5984bbb696`** | 23 days | Bumps `tsx` 4.7→4.22 in `mcp-server/`, plus lock-file updates in root and `worker/` | **BRING IN** | Safe dev-dep toolchain bump; low risk. Helps close outstanding moderate advisories. |
 | **`audit/report-2026-06-10` through `audit/report-2026-07-10`** (10 branches) | 3–33 days | Audit report markdown only — no product code | **ARCHIVE (delete all)** | Reports superseded by this run. **Exception:** check `audit/report-2026-06-13` for the `chore: normalize fsevents dev flag` commit — cherry-pick or drop before deleting. |
 
-**Open PRs:** 0 on master. **Dependabot security advisories:** not checked in cloud (no `gh` auth) — last count was 10 moderate (2026-06-07). Check: `https://github.com/mar2181/lovable-clone/security/dependabot`.
+**Open PRs:** 0 on master. **Dependabot security advisories:** **43 total — 5 HIGH, 30 moderate, 8 low** (surfaced by push output). Escalation from 10 moderate in June. See: `https://github.com/mar2181/lovable-clone/security/dependabot`.
 
 ---
 
