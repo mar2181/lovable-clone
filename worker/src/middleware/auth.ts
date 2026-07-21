@@ -155,7 +155,13 @@ export async function authMiddleware(c: Context, next: Next) {
   // "dev-local-user" namespace. Map the owner's real Clerk identity onto that
   // namespace so retiring the public dev-bypass does NOT orphan their work —
   // zero data migration. Non-owner users keep their own Clerk subject id.
-  const uid = isOwnerEmail(email) ? "dev-local-user" : payload.sub;
+  // Owner is matched by email (when the token/Backend-API yields it) OR by an
+  // explicit subject-id pin (OWNER_CLERK_SUB) — the pin is instance-agnostic and
+  // works even when email resolution is unavailable.
+  const isOwner =
+    isOwnerEmail(email) ||
+    (!!c.env.OWNER_CLERK_SUB && payload.sub === c.env.OWNER_CLERK_SUB);
+  const uid = isOwner ? "dev-local-user" : payload.sub;
   c.set("userId", uid);
 
   // Register owner/admin accounts for unlimited credits.

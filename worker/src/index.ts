@@ -34,6 +34,7 @@ export type Bindings = {
   FAL_KEY: string;
   ENVIRONMENT: string;
   DEV_BYPASS_AUTH?: string;
+  OWNER_CLERK_SUB?: string; // prod Clerk subject id of the owner; remapped onto the legacy "dev-local-user" workspace
   GITHUB_PAT: string;
   VERCEL_API_KEY: string;
   MCP_API_KEY: string;
