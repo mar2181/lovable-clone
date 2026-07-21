@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
 import { authMiddleware } from "../middleware/auth";
-import { isOwner } from "../services/credits";
+import { isOwner, getOrInitCredits } from "../services/credits";
 
 const creditsRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
@@ -26,21 +26,9 @@ creditsRouter.get("/", async (c) => {
   }
 
   try {
-    const creditsStr = await kv.get(`user:${userId}:credits`);
-
-    if (!creditsStr) {
-      const initialCredits = {
-        userId,
-        balance: 10,
-        tier: "free",
-        updatedAt: new Date().toISOString()
-      };
-
-      await kv.put(`user:${userId}:credits`, JSON.stringify(initialCredits));
-      return c.json({ credits: initialCredits });
-    }
-
-    return c.json({ credits: JSON.parse(creditsStr) });
+    // Single source of truth for balances + first-use seeding (FREE_CREDITS).
+    const credits = await getOrInitCredits(userId, kv);
+    return c.json({ credits });
   } catch (error) {
     console.error("Failed to fetch credits:", error);
     return c.json({ error: "Failed to fetch credits" }, 500);
