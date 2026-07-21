@@ -28,6 +28,16 @@ assetsRouter.get("/:projectId/:filename", async (c) => {
 assetsRouter.post("/:projectId", authMiddleware, async (c) => {
   const projectId = c.req.param("projectId");
   if (!projectId) return c.json({ error: "Missing projectId" }, 400);
+
+  // Per-user isolation: an authenticated caller may only write assets into a
+  // project they OWN. Without this check any signed-up user could push assets
+  // into any project's `assets/${projectId}/…` namespace by guessing the id
+  // (a cross-tenant write into a publicly-served image path). Mirrors the
+  // ownership gate every other project-scoped route uses.
+  const userId = c.get("userId");
+  const ownerKey = await c.env.KV_METADATA.get(`user:${userId}:project:${projectId}`);
+  if (!ownerKey) return c.json({ error: "Project not found" }, 404);
+
   const body = await c.req.json<{
     imageBase64?: string;
     dataUrl?: string;
