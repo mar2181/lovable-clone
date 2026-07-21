@@ -54,6 +54,12 @@ export type Bindings = {
 // Define custom variables that persist through the request (like userId)
 export type Variables = {
   userId: string;
+  // True when the authenticated principal is the workspace owner (real owner
+  // login remapped onto "dev-local-user", the dev-bypass token, or a trusted
+  // MCP-API-key service call). Gates confused-deputy routes that act on the
+  // operator's SHARED third-party credentials (Supabase PAT, GitHub, Vercel,
+  // Twilio) — see ownerOnly in middleware/auth.ts.
+  isOwner: boolean;
 };
 
 const app = new Hono<{ Bindings: Bindings; Variables: Variables }>();

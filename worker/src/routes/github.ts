@@ -1,12 +1,15 @@
 import { Hono } from "hono";
 import { nanoid } from "nanoid";
 import { Bindings, Variables } from "../index";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, ownerOnly } from "../middleware/auth";
 import type { SupabaseLinkRecord } from "../types/supabase";
 
 const githubRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 githubRouter.use("*", authMiddleware);
+// Confused-deputy lockdown: uses the shared GitHub PAT (creates repos/pushes
+// under the operator's account). Owner-only until per-tenant GitHub auth exists.
+githubRouter.use("*", ownerOnly);
 
 // Parse a GitHub repo reference from the many shapes a user might paste:
 //   owner/repo

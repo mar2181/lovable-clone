@@ -46,6 +46,9 @@ export async function authMiddleware(c: Context, next: Next) {
   if (apiKey && c.env.MCP_API_KEY && apiKey === c.env.MCP_API_KEY) {
     const serviceUserId = c.req.header("X-User-Id") || "mcp-service-user";
     c.set("userId", serviceUserId);
+    // MCP-API-key holders are fully trusted internal callers (the key is a
+    // write-only worker secret). Treat them as owner for confused-deputy gates.
+    c.set("isOwner", true);
     console.log(`[MCP Auth] API key accepted, user=${serviceUserId}`);
     await next();
     return;
@@ -67,6 +70,7 @@ export async function authMiddleware(c: Context, next: Next) {
   ) {
     const devUserId = "dev-local-user";
     c.set("userId", devUserId);
+    c.set("isOwner", true);
     registerOwnerIfAdmin(devUserId, "hssolutions2181@gmail.com");
     console.log(`[Dev Auth] dev-bypass accepted, user=${devUserId}`);
     await next();
@@ -163,6 +167,7 @@ export async function authMiddleware(c: Context, next: Next) {
     (!!c.env.OWNER_CLERK_SUB && payload.sub === c.env.OWNER_CLERK_SUB);
   const uid = isOwner ? "dev-local-user" : payload.sub;
   c.set("userId", uid);
+  c.set("isOwner", isOwner);
 
   // Register owner/admin accounts for unlimited credits.
   // (The owner cache is in-process; this is best-effort and re-runs per cold start.)
@@ -170,4 +175,36 @@ export async function authMiddleware(c: Context, next: Next) {
   console.log(`[Auth] Clerk verified sub=${payload.sub} email=${email ?? "?"} -> uid=${uid}`);
 
   await next();
+}
+
+// -----------------------------------------------------------------------------
+// ownerOnly — confused-deputy gate.
+//
+// Several routes act on the OPERATOR's shared third-party credentials (the
+// Supabase management PAT, the GitHub PAT, the Vercel API key, the Twilio
+// account). Until per-tenant credentials exist, a non-owner who reached these
+// routes would be borrowing Mario's identity — arbitrary cross-tenant SQL,
+// public repos under his account, prod deploys, SMS toll-fraud. This gate
+// restricts such routes to the workspace owner (or a trusted MCP-key service
+// call). Everyone else authenticated gets a clean 403.
+//
+// Mount AFTER authMiddleware so `isOwner` is populated:
+//   router.use("*", authMiddleware);
+//   router.use("*", ownerOnly);
+// -----------------------------------------------------------------------------
+export async function ownerOnly(c: Context, next: Next) {
+  if (c.get("isOwner") === true) {
+    await next();
+    return;
+  }
+  console.warn(
+    `[OwnerGate] blocked non-owner userId=${c.get("userId") ?? "?"} ${c.req.method} ${c.req.path}`,
+  );
+  return c.json(
+    {
+      error: "This feature isn't available on your account yet.",
+      code: "owner_only",
+    },
+    403,
+  );
 }

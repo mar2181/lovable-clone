@@ -1,10 +1,13 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, ownerOnly } from "../middleware/auth";
 
 const shareRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 shareRouter.use("*", authMiddleware);
+// Confused-deputy lockdown: sends via the shared Twilio account (SMS toll-fraud
+// risk) and the operator's Telegram. Owner-only until per-tenant messaging exists.
+shareRouter.use("*", ownerOnly);
 
 type ShareChannel = "telegram" | "sms";
 

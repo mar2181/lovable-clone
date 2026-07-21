@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, ownerOnly } from "../middleware/auth";
 import { nanoid } from "nanoid";
 import { managementGet, managementPost } from "../services/supabase";
 import type {
@@ -12,6 +12,10 @@ import type {
 const supabaseRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 supabaseRouter.use("*", authMiddleware);
+// Confused-deputy lockdown: the whole Supabase router acts on the shared
+// management PAT (arbitrary cross-tenant SQL/migrations). Owner-only until
+// per-tenant Supabase credentials exist.
+supabaseRouter.use("*", ownerOnly);
 
 // ── Connection status ──────────────────────────────────────────────────────
 supabaseRouter.get("/connect-status", async (c) => {

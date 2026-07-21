@@ -1,11 +1,14 @@
 import { Hono } from "hono";
 import { Bindings, Variables } from "../index";
-import { authMiddleware } from "../middleware/auth";
+import { authMiddleware, ownerOnly } from "../middleware/auth";
 import type { SupabaseLinkRecord } from "../types/supabase";
 
 const vercelRouter = new Hono<{ Bindings: Bindings; Variables: Variables }>();
 
 vercelRouter.use("*", authMiddleware);
+// Confused-deputy lockdown: uses the shared Vercel API key (deploys under the
+// operator's account). Owner-only until per-tenant Vercel auth exists.
+vercelRouter.use("*", ownerOnly);
 
 // Default CRA dependencies that every deployed project needs
 const DEFAULT_DEPENDENCIES: Record<string, string> = {
