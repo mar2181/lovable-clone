@@ -1,0 +1,49 @@
+name: CI
+
+# Phase 0 regression gate for the HS Web App Builder.
+# Runs on every push and PR. Gates on TYPECHECK (frontend + worker) — the check that
+# is genuinely green today, so a type error can't land silently. Lint is intentionally
+# NOT a gate yet: the tree carries ~1,052 pre-existing eslint errors (mostly explicit-any
+# in worker/src/services/*), so a lint gate would be red on day one and block real work.
+# Cleaning that debt + turning lint into a gate is tracked for a later phase, alongside
+# `next build` once CI has the required NEXT_PUBLIC_* env wired.
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend (typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Install
+        run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+  worker:
+    name: Worker (typecheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: worker/package-lock.json
+      - name: Install
+        run: npm ci
+        working-directory: worker
+      - name: Typecheck
+        run: npm run typecheck
+        working-directory: worker
