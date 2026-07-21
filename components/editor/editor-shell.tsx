@@ -30,6 +30,56 @@ export function EditorShell({ projectId }: { projectId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const { getToken } = useAuth();
 
+  // --- Manual-edit persistence (Phase 0) ------------------------------------
+  // Hand edits (Monaco, and the click-to-edit surface coming in Phase 1) used to
+  // live only in React state and vanished on reload. We now debounce-save them to
+  // the append-only version store via POST /api/versions/:projectId.
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const hydratedRef = useRef(false);   // true once the initial version has loaded
+  const filesRef = useRef(files);      // latest files, read at flush time
+  const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const savedFlashRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  filesRef.current = files;
+
+  const persistFiles = useCallback(async () => {
+    // Never write before the project has hydrated (would fork an empty version)
+    // or with nothing loaded.
+    if (!hydratedRef.current || Object.keys(filesRef.current).length === 0) return;
+    setSaveState("saving");
+    try {
+      const token = await getToken();
+      const res = await fetch(`${WORKER_URL}/api/versions/${projectId}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+        body: JSON.stringify({ files: filesRef.current, message: "Manual edit" }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      setSaveState("saved");
+      if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
+      savedFlashRef.current = setTimeout(() => setSaveState("idle"), 1800);
+    } catch (err) {
+      console.error("Failed to save manual edit:", err);
+      setSaveState("error");   // fail-visibly — the pill turns red, edit stays in state
+    }
+  }, [projectId, getToken]);
+
+  const scheduleSave = useCallback(() => {
+    if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+    // Coalesce a burst of keystrokes/inline edits into one version.
+    saveTimerRef.current = setTimeout(() => { void persistFiles(); }, 1500);
+  }, [persistFiles]);
+
+  // Flush any pending save on unmount so a quick close doesn't drop the last edit.
+  useEffect(() => {
+    return () => {
+      if (saveTimerRef.current) {
+        clearTimeout(saveTimerRef.current);
+        void persistFiles();
+      }
+      if (savedFlashRef.current) clearTimeout(savedFlashRef.current);
+    };
+  }, [persistFiles]);
+
   useEffect(() => {
     async function loadProject() {
       try {
@@ -49,6 +99,10 @@ export function EditorShell({ projectId }: { projectId: string }) {
         }
       } catch (err) {
         console.error("Failed to load project files:", err);
+      } finally {
+        // Autosave is armed only after the first load settles, so restoring the
+        // current version never spawns a duplicate.
+        hydratedRef.current = true;
       }
     }
     loadProject();
@@ -92,7 +146,12 @@ export function EditorShell({ projectId }: { projectId: string }) {
   }, [projectId, getToken]);
 
   const handleFileChange = (filename: string, content: string) => {
-    setFiles(prev => ({ ...prev, [filename]: content }));
+    setFiles(prev => {
+      const next = { ...prev, [filename]: content };
+      filesRef.current = next;   // so a flush right now sees this edit
+      return next;
+    });
+    scheduleSave();
   };
 
   const handleRestore = (restoredFiles: Record<string, string>, restoredDeps: Record<string, string>) => {
@@ -216,6 +275,45 @@ export function EditorShell({ projectId }: { projectId: string }) {
           above the Sandpack iframe so the parent keeps receiving mousemove —
           without it the drag stalls the moment the cursor crosses the preview. */}
       {resizing && <div className="fixed inset-0 z-[2147483000] cursor-col-resize" />}
+
+      {/* Save-status pill — manual edits persist to the version store (Phase 0).
+          Hidden while idle so it never competes with the Map Mode HUD. */}
+      {saveState !== "idle" && (
+        <div
+          className={`fixed bottom-4 right-4 z-[2147483001] flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-medium shadow-lg backdrop-blur ${
+            saveState === "error"
+              ? "bg-red-500/90 text-white"
+              : "bg-zinc-800/90 text-zinc-100 border border-white/10"
+          }`}
+          role="status"
+          aria-live="polite"
+        >
+          {saveState === "saving" && (
+            <>
+              <span className="h-2 w-2 animate-pulse rounded-full bg-sky-400" />
+              Saving…
+            </>
+          )}
+          {saveState === "saved" && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-emerald-400" />
+              Saved
+            </>
+          )}
+          {saveState === "error" && (
+            <>
+              <span className="h-2 w-2 rounded-full bg-white" />
+              Save failed — retry
+              <button
+                onClick={() => void persistFiles()}
+                className="ml-1 rounded bg-white/20 px-1.5 py-0.5 hover:bg-white/30"
+              >
+                Retry
+              </button>
+            </>
+          )}
+        </div>
+      )}
 
       {/* Map Mode — numbered voice/keyboard command HUD (docs/SOP_MAP_MODE.md) */}
       <MapModeController />
