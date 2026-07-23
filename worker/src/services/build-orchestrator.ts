@@ -242,17 +242,21 @@ export async function generateBatch(
   const parsed = parseStreamToJSON(fullContent);
 
   if (!parsed || !parsed.files || Object.keys(parsed.files).length === 0) {
-    // Mark pages as error
+    // Mark pages as error and THROW so the caller (build.ts) skips credit
+    // deduction and version save for this batch. Previously we returned the
+    // manifest here, which caused build.ts to bill a credit + save a version
+    // for a batch that produced zero files.
     for (const page of batch) {
       page.status = "error";
       await onEvent({ type: "page_status", page: page.name, status: "error" });
     }
+    const batchErrMsg = `Batch ${batchIndex + 1}: AI returned no files`;
     await onEvent({
       type: "error",
-      error: `Batch ${batchIndex + 1}: AI returned no files`,
+      error: batchErrMsg,
       batchIndex,
     });
-    return manifest;
+    throw new Error(batchErrMsg);
   }
 
   // Sanitize

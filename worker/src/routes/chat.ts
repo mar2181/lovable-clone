@@ -44,31 +44,34 @@ function isAllowedAttachmentUrl(url: string, allowedDomain: string): boolean {
   }
 }
 
-// Models that we've confirmed handle OpenAI-style tool calls reliably via
-// OpenRouter. Ask mode forces effectiveModel onto this list before passing
-// `tools` to streamText so we don't silently land on a model that ignores
-// them. Vision already auto-switches to gpt-4.1; this is the same idea for
-// tool use.
-const TOOL_CAPABLE_MODELS = new Set<string>([
-  "openai/gpt-4.1",
-  "openai/gpt-4o",
-  "openai/gpt-4o-mini",
-  "anthropic/claude-sonnet-4",
-  "anthropic/claude-haiku-4",
-  "anthropic/claude-opus-4",
-]);
-const ASK_TOOL_FALLBACK_MODEL = "openai/gpt-4.1";
+// Tool-capable model check. Previously a static Set that drifted from the
+// frontend catalog every time a model was added — now prefix-based so new
+// GPT/Claude/Gemini model versions auto-enroll without a worker deploy.
+//
+// Tool-capable families (prefix-matched): openai/gpt-4*, openai/gpt-5*,
+//   anthropic/claude-sonnet*, anthropic/claude-opus*, anthropic/claude-haiku*,
+//   google/gemini-*
+// Known no-tool families: moonshotai/kimi*, deepseek/*, minimax/*, stepfun/*,
+//   x-ai/*, nvidia/*, z-ai/*, inclusionai/*, tencent/*
+function isToolCapable(modelId: string): boolean {
+  const capable = ["openai/gpt-4","openai/gpt-5","anthropic/claude-sonnet","anthropic/claude-opus","anthropic/claude-haiku","google/gemini-"];
+  if (capable.some(p => modelId.startsWith(p))) return true;
+  const noTools = ["moonshotai/","deepseek/","minimax/","stepfun/","x-ai/","nvidia/","z-ai/","inclusionai/","tencent/"];
+  if (noTools.some(p => modelId.startsWith(p))) return false;
+  return false; // unknown model — conservative: no tools
+}
+const ASK_TOOL_FALLBACK_MODEL = "anthropic/claude-haiku-4.5";
 
 // Research mode runs the Outlier Engine workflow: ~20 tool calls, long reasoning
 // between them. Claude Sonnet is the best balance of tool-use reliability and
 // long-context coherence at our budget — force it regardless of the user's
 // dropdown pick. (Kimi K2.6 in particular cannot drive this workflow.)
-const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-4";
+const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-4.6";
 
 // Cinematic mode produces a multi-file magazine page with strict JSON output.
 // Sonnet handles the long structured envelope reliably; Kimi K2.6 truncates
 // mid-file under the cinematic prompt's length. Force Sonnet here too.
-const CINEMATIC_FORCED_MODEL = "anthropic/claude-sonnet-4";
+const CINEMATIC_FORCED_MODEL = "anthropic/claude-sonnet-4.6";
 
 // Step cap. Build/Ask use a tight cap so a runaway prompt can't drain Tavily
 // or Firecrawl credit. Research mode legitimately needs many more steps —
@@ -230,7 +233,7 @@ chatRouter.post("/:projectId", async (c) => {
     // model: code-generation strength matters more than tool support there.
     // If the user wants to scrape during Build, they pick a tool-capable
     // model from the dropdown; otherwise the worker silently skips tools.
-    if (mode === "ask" && !TOOL_CAPABLE_MODELS.has(effectiveModel)) {
+    if (mode === "ask" && !isToolCapable(effectiveModel)) {
       console.log(`[Chat] Ask mode: model "${effectiveModel}" not in tool-capable allowlist — switching to ${ASK_TOOL_FALLBACK_MODEL}`);
       effectiveModel = ASK_TOOL_FALLBACK_MODEL;
     }
@@ -365,7 +368,7 @@ chatRouter.post("/:projectId", async (c) => {
         const toolsEnabled =
           mode === "ask" ||
           mode === "research" ||
-          (mode === "build" && TOOL_CAPABLE_MODELS.has(effectiveModel));
+          (mode === "build" && isToolCapable(effectiveModel));
         const tools = toolsEnabled ? buildTools(c.env) : undefined;
         const stepCap =
           mode === "research"
