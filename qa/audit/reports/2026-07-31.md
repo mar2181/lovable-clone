@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-07-31T11:30Z · **Run:** #3 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky  
-**Overall: 🔴 RED** — Three P0 outages active simultaneously: build engine down (OpenRouter credits exhausted), dashboard 404 (stale Vercel deploy), voice box down (pod crashed).
+**Overall: 🔴 RED** — Three P0 outages active simultaneously: build engine down (OpenRouter credits exhausted), dashboard 404 (stale Vercel deploy), voice box down (pod crashed). Additionally: 24 new GitHub dependency vulnerabilities (14 HIGH) discovered on push.
 
 > Probe: 5 GREEN · 9 YELLOW · 3 RED | Deep audit: 6 domains | Auto-healed: **none** (all fixes require Mario)
 
@@ -55,6 +55,18 @@ All three endpoints checked: `/healthz`, `/dashboard/tools`, `/api/connect` — 
 4. Verify: `curl -s https://udcz4k7kse1zw6-7860.proxy.runpod.net/healthz` → `{"ok":true,...}`
 
 **Note:** Per `policy.md`, auto-fix of pod restart requires `RUNPOD_API_KEY` which is not available in cloud runs. Flag for Mario.
+
+---
+
+### P1 — 24 GitHub Dependency Vulnerabilities on master (14 HIGH, 10 moderate) 🔴 [NEW — ESCALATED from last audit]
+
+Discovered on push: GitHub security scanner reports **24 vulnerabilities** on `mar2181/lovable-clone`'s default branch — 14 **high** severity and 10 moderate. This is a major escalation from the 10 moderate reported in 2026-06-07 (which were thought resolved by commit `5cef645`; these are new or newly-detected advisories).
+
+**Fix:**
+1. Go to [https://github.com/mar2181/lovable-clone/security/dependabot](https://github.com/mar2181/lovable-clone/security/dependabot)
+2. Review each HIGH-severity advisory first. Accept Dependabot PRs for safe lock-file-only upgrades.
+3. For breaking-change upgrades, review the diff carefully before merging.
+4. Two Dependabot branches already exist on origin: `dependabot/npm_and_yarn/mcp-server/npm_and_yarn-04db377a11` and `dependabot/npm_and_yarn/npm_and_yarn-5984bbb696` — start there.
 
 ---
 
@@ -180,7 +192,7 @@ Prior audit noted 4-page builds taking 180–200s, racing the SSE timeout. Could
 | P1 dev-bypass | 🔴 PERSISTS | 🔴 PERSISTS | **No change** |
 | GitHub import | Not tested E2E | ✅ 201, 22 files | **IMPROVED** |
 | Sandpack tests | Not run | ✅ 14/14 pass | **IMPROVED** |
-| Dependabot 10 moderate | 🔴 NEW | Merged via commit 5cef645 | **RESOLVED** |
+| Dependabot 10 moderate | 🔴 NEW | Thought resolved via 5cef645, 24 new (14 HIGH) discovered on push | **ESCALATED** |
 | `template-picker.tsx:80` | 🔴 P2 open | 🔴 P3 open | **No change** |
 | agent_id in concierge | Not checked | 🔴 Missing | **NEW P2** |
 | middleware.ts deprecation | Not flagged | ⚠️ Deprecated | **NEW P3** |
