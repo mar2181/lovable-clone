@@ -631,4 +631,243 @@ export default function App() {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Custom-domain attach (Phase B.1 — "connect your own domain")
+//
+// The client buys a domain at whatever registrar they like; we attach it to
+// their Vercel project (which lives under OUR shared account) and hand back the
+// exact DNS records they need to set. No reselling, no billing on our side.
+//
+// A domain can only be attached to a project that has been deployed at least
+// once, because the deploy path is what creates the Vercel project and pins its
+// name into KV (`project:{id}:vercel_project_id`). Attaching to a name that
+// doesn't exist would 404 from Vercel and read as a bug to the client.
+// ---------------------------------------------------------------------------
+
+// Resolve the pinned Vercel project name for a builder projectId, or null.
+async function resolveVercelProjectName(
+  c: any,
+  projectId: string,
+): Promise<string | null> {
+  if (!projectId) return null;
+  try {
+    const name = await c.env.KV_METADATA.get(`project:${projectId}:vercel_project_id`);
+    return name || null;
+  } catch {
+    return null;
+  }
+}
+
+// Normalize whatever the client typed into a bare hostname:
+//   "https://Shop.Example.com/" -> "shop.example.com"
+function normalizeDomain(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  let d = raw.trim().toLowerCase();
+  d = d.replace(/^https?:\/\//, "").replace(/\/.*$/, "").replace(/\.$/, "");
+  // hostname shape: labels of a-z0-9/hyphen, at least two labels, valid TLD
+  if (!/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$/.test(d)) {
+    return null;
+  }
+  return d;
+}
+
+// Given a bare hostname, return the DNS record the client should set at their
+// registrar to point it at Vercel. Apex (example.com) -> A; anything with a
+// subdomain (www.example.com, shop.example.com) -> CNAME.
+// NOTE: apex detection is label-count based, so a naked domain on a multipart
+// public suffix (example.co.uk) is treated as a subdomain and told to use a
+// CNAME. Vercel accepts either an A record or the CNAME for a naked domain, so
+// this is safe; we prefer A for the common two-label apex.
+function dnsRecordFor(domain: string): {
+  type: "A" | "CNAME";
+  name: string;
+  value: string;
+  host: string;
+}[] {
+  const labels = domain.split(".");
+  const isApex = labels.length === 2; // example.com
+  if (isApex) {
+    return [{ type: "A", name: "@", host: domain, value: "76.76.21.21" }];
+  }
+  const sub = labels[0];
+  return [{ type: "CNAME", name: sub, host: domain, value: "cname.vercel-dns.com" }];
+}
+
+// POST /attach-domain  { projectId, domain }
+// Idempotent: re-attaching an already-attached domain returns its current state
+// rather than erroring, so the client can safely retry.
+vercelRouter.post("/attach-domain", async (c) => {
+  const vercelToken = c.env.VERCEL_API_KEY;
+  if (!vercelToken) {
+    return c.json({ error: "Vercel API key not configured on the server" }, 500);
+  }
+
+  let body: { projectId?: string; domain?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const projectId = String(body.projectId || "");
+  const domain = normalizeDomain(body.domain);
+  if (!projectId) return c.json({ error: "Missing projectId" }, 400);
+  if (!domain) {
+    return c.json({ error: "Enter a valid domain, e.g. yourbusiness.com" }, 400);
+  }
+
+  const vercelProjectName = await resolveVercelProjectName(c, projectId);
+  if (!vercelProjectName) {
+    return c.json(
+      { error: "Publish your site once before attaching a domain.", code: "not_deployed" },
+      409,
+    );
+  }
+
+  // 1. Attach the domain to the project. 409 = already attached, which is fine.
+  const addRes = await fetch(
+    `https://api.vercel.com/v10/projects/${encodeURIComponent(vercelProjectName)}/domains`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${vercelToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ name: domain }),
+    },
+  );
+
+  if (!addRes.ok && addRes.status !== 409) {
+    const err = await addRes.text();
+    // A domain already on ANOTHER Vercel account comes back as a specific error
+    // the client can act on (they must remove it there, or verify ownership).
+    let friendly = `Could not attach ${domain}: ${err.slice(0, 200)}`;
+    try {
+      const parsed = JSON.parse(err) as { error?: { code?: string; message?: string } };
+      if (parsed?.error?.message) friendly = parsed.error.message;
+    } catch { /* keep raw */ }
+    return c.json({ error: friendly, status: addRes.status }, 502);
+  }
+
+  // 2. Read the project-domain record for the authoritative verified state and
+  //    any ownership-verification (TXT) records Vercel needs.
+  const statusRes = await fetch(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(vercelProjectName)}/domains/${encodeURIComponent(domain)}`,
+    { headers: { Authorization: `Bearer ${vercelToken}` } },
+  );
+  let verified = false;
+  let verification: Array<{ type: string; domain: string; value: string; reason?: string }> = [];
+  if (statusRes.ok) {
+    const info = (await statusRes.json()) as {
+      verified?: boolean;
+      verification?: typeof verification;
+    };
+    verified = !!info.verified;
+    if (Array.isArray(info.verification)) verification = info.verification;
+  }
+
+  return c.json({
+    success: true,
+    domain,
+    verified,
+    // The DNS record the client sets at their registrar to point the domain here.
+    dnsRecords: dnsRecordFor(domain),
+    // Ownership-verification records Vercel requires ONLY when the domain is
+    // already attached to a different Vercel account. Empty in the common case.
+    verification,
+    note: verified
+      ? "Domain is verified and live."
+      : "Set the DNS record(s) at your registrar, then check status. DNS can take up to a few hours to propagate.",
+  });
+});
+
+// GET /domain-status?projectId=&domain=
+vercelRouter.get("/domain-status", async (c) => {
+  const vercelToken = c.env.VERCEL_API_KEY;
+  if (!vercelToken) {
+    return c.json({ error: "Vercel API key not configured on the server" }, 500);
+  }
+  const projectId = String(c.req.query("projectId") || "");
+  const domain = normalizeDomain(c.req.query("domain"));
+  if (!projectId) return c.json({ error: "Missing projectId" }, 400);
+  if (!domain) return c.json({ error: "Missing or invalid domain" }, 400);
+
+  const vercelProjectName = await resolveVercelProjectName(c, projectId);
+  if (!vercelProjectName) {
+    return c.json({ error: "Project has no deployment.", code: "not_deployed" }, 409);
+  }
+
+  const statusRes = await fetch(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(vercelProjectName)}/domains/${encodeURIComponent(domain)}`,
+    { headers: { Authorization: `Bearer ${vercelToken}` } },
+  );
+  if (statusRes.status === 404) {
+    return c.json({ error: "Domain is not attached to this project.", code: "not_attached" }, 404);
+  }
+  if (!statusRes.ok) {
+    const err = await statusRes.text();
+    return c.json({ error: `Vercel status check failed: ${err.slice(0, 200)}` }, 502);
+  }
+  const info = (await statusRes.json()) as {
+    verified?: boolean;
+    verification?: Array<{ type: string; domain: string; value: string; reason?: string }>;
+  };
+
+  // Also check the domain config for whether the DNS records actually resolve
+  // to Vercel yet (misconfigured=true means the records are not set/propagated).
+  let misconfigured: boolean | null = null;
+  try {
+    const cfgRes = await fetch(
+      `https://api.vercel.com/v6/domains/${encodeURIComponent(domain)}/config`,
+      { headers: { Authorization: `Bearer ${vercelToken}` } },
+    );
+    if (cfgRes.ok) {
+      const cfg = (await cfgRes.json()) as { misconfigured?: boolean };
+      misconfigured = cfg.misconfigured ?? null;
+    }
+  } catch { /* leave null */ }
+
+  return c.json({
+    success: true,
+    domain,
+    verified: !!info.verified,
+    misconfigured,
+    verification: Array.isArray(info.verification) ? info.verification : [],
+    dnsRecords: dnsRecordFor(domain),
+  });
+});
+
+// DELETE /domain  { projectId, domain } — detach a domain from the project.
+vercelRouter.delete("/domain", async (c) => {
+  const vercelToken = c.env.VERCEL_API_KEY;
+  if (!vercelToken) {
+    return c.json({ error: "Vercel API key not configured on the server" }, 500);
+  }
+  let body: { projectId?: string; domain?: string };
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const projectId = String(body.projectId || "");
+  const domain = normalizeDomain(body.domain);
+  if (!projectId) return c.json({ error: "Missing projectId" }, 400);
+  if (!domain) return c.json({ error: "Missing or invalid domain" }, 400);
+
+  const vercelProjectName = await resolveVercelProjectName(c, projectId);
+  if (!vercelProjectName) {
+    return c.json({ error: "Project has no deployment.", code: "not_deployed" }, 409);
+  }
+
+  const delRes = await fetch(
+    `https://api.vercel.com/v9/projects/${encodeURIComponent(vercelProjectName)}/domains/${encodeURIComponent(domain)}`,
+    { method: "DELETE", headers: { Authorization: `Bearer ${vercelToken}` } },
+  );
+  if (!delRes.ok && delRes.status !== 404) {
+    const err = await delRes.text();
+    return c.json({ error: `Could not remove domain: ${err.slice(0, 200)}` }, 502);
+  }
+  return c.json({ success: true, domain, removed: true });
+});
+
 export default vercelRouter;
