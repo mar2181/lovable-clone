@@ -70,9 +70,24 @@ export async function authMiddleware(c: Context, next: Next) {
   ) {
     const devUserId = "dev-local-user";
     c.set("userId", devUserId);
-    c.set("isOwner", true);
+    // ------------------------------------------------------------------------
+    // SECURITY (2026-08-09): the dev-bypass string is public (hardcoded in our
+    // own committed source: api/builder/proxy.js, lovable-pp-cli, mcp-server).
+    // It must NEVER confer owner privilege -- that would let anyone on the
+    // internet reach the ownerOnly routers, which act on the OPERATOR's shared
+    // credentials: arbitrary Supabase Management SQL against the prod databases
+    // (casevault / marketing / petbuddy / hs-quizzes), GitHub PAT pushes,
+    // Vercel prod deploys, and Twilio SMS. Confirmed exploitable live before
+    // this change. The bypass now authenticates as a NON-owner so build/edit
+    // still work for the dev UI, while every ownerOnly route returns 403.
+    // Trusted automation authenticates with X-API-Key (MCP_API_KEY) instead,
+    // which keeps owner. Full removal of this block is the follow-up step,
+    // gated on the dev UI moving to Clerk sign-in (else it orphans the
+    // operator from their own project namespace).
+    // ------------------------------------------------------------------------
+    c.set("isOwner", false);
     registerOwnerIfAdmin(devUserId, "hssolutions2181@gmail.com");
-    console.log(`[Dev Auth] dev-bypass accepted, user=${devUserId}`);
+    console.log(`[Dev Auth] dev-bypass accepted (non-owner), user=${devUserId}`);
     await next();
     return;
   }
