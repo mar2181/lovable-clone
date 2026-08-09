@@ -13,8 +13,13 @@ binding = "KV_METADATA"
 id = "762c5fc8290c44259c67922b75fa2d13"
 
 [vars]
-ENVIRONMENT = "development"
-DEV_BYPASS_AUTH = "1"
+# SECURITY 2026-08-09: production mode DISABLES the public dev-bypass token
+# (Bearer dev-local-user). devBypassEnabled in auth.ts:66 and credits.ts:23 both
+# read ENVIRONMENT/DEV_BYPASS_AUTH; with ENVIRONMENT != development AND
+# DEV_BYPASS_AUTH unset, the bypass is fully off -> dev-local-user falls through
+# to Clerk verification -> 401. Trusted automation uses X-API-Key (MCP_API_KEY),
+# which auth.ts checks FIRST and independently, so lovable-pp-cli keeps owner.
+ENVIRONMENT = "production"
 
 # R2 public domain for attachment URLs. Set this to your R2 bucket's public
 # custom domain or the r2.dev domain (e.g. "https://pub-<hash>.r2.dev").
