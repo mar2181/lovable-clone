@@ -388,6 +388,12 @@ chatRouter.post("/:projectId", async (c) => {
               : STEP_CAP_DEFAULT;
         const result = await streamText({
           model: aiModel,
+          // Cap the output reservation. OpenRouter pre-authorizes the full
+          // max_tokens against the account balance; the model default (~64k)
+          // over-reserves and, at Sonnet-5 pricing, can exceed a low balance
+          // and hard-fail the build with a credits error. 32k is ample for a
+          // multi-file scaffold and leaves headroom on the shared pool.
+          maxOutputTokens: 32000,
           system: fullSystemPrompt,
           messages: [{ role: "user", content: userContent }],
           ...(tools ? { tools, stopWhen: stepCountIs(stepCap) } : {}),
