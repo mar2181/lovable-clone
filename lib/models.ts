@@ -26,6 +26,13 @@ export const AI_MODELS: AIModel[] = [
     vision: false,
   },
   {
+    id: "anthropic/claude-sonnet-5",
+    name: "Claude Sonnet 5",
+    provider: "Anthropic",
+    description: "Best design + coding — the default builder brain",
+    vision: true,
+  },
+  {
     id: "anthropic/claude-sonnet-4.6",
     name: "Claude Sonnet 4.6",
     provider: "Anthropic",
@@ -163,7 +170,10 @@ export const AI_MODELS: AIModel[] = [
 // kimi-k2.6 is a *reasoning* model — its output streams into a `reasoning`
 // field instead of `content`, which the AI SDK's streamText() does not read,
 // so the worker sees an empty stream and the chat panel hangs forever.
-// claude-haiku-4.5 is a normal completion model: fast, cheap, reliable, and
-// vision-capable. Verified end-to-end via OpenRouter 2026-05-07.
-export const DEFAULT_MODEL = "anthropic/claude-haiku-4.5";
-export const VISION_MODEL = "anthropic/claude-haiku-4.5";
+// claude-sonnet-5 is a normal completion model (content, not a reasoning
+// field): the strongest design/coding tier, vision-capable, and it draws the
+// whole first look of every build, so it is the default. Verified available
+// on OpenRouter 2026-08-10. Cheaper tiers (claude-haiku-4.5, etc.) remain
+// selectable in the picker for quick drafts.
+export const DEFAULT_MODEL = "anthropic/claude-sonnet-5";
+export const VISION_MODEL = "anthropic/claude-sonnet-5";

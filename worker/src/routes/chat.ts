@@ -9,6 +9,7 @@ import {
   RESEARCH_PROMPT,
   CINEMATIC_PROMPT,
   TASTE_RULES,
+  HOUSE_STYLE,
   STRATEGY_SOURCE_OF_TRUTH,
 } from "../ai/system-prompt";
 import { parseStreamToJSON } from "../ai/file-parser";
@@ -66,12 +67,12 @@ const ASK_TOOL_FALLBACK_MODEL = "anthropic/claude-haiku-4.5";
 // between them. Claude Sonnet is the best balance of tool-use reliability and
 // long-context coherence at our budget — force it regardless of the user's
 // dropdown pick. (Kimi K2.6 in particular cannot drive this workflow.)
-const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-4.6";
+const RESEARCH_FORCED_MODEL = "anthropic/claude-sonnet-5";
 
 // Cinematic mode produces a multi-file magazine page with strict JSON output.
 // Sonnet handles the long structured envelope reliably; Kimi K2.6 truncates
 // mid-file under the cinematic prompt's length. Force Sonnet here too.
-const CINEMATIC_FORCED_MODEL = "anthropic/claude-sonnet-4.6";
+const CINEMATIC_FORCED_MODEL = "anthropic/claude-sonnet-5";
 
 // Step cap. Build/Ask use a tight cap so a runaway prompt can't drain Tavily
 // or Firecrawl credit. Research mode legitimately needs many more steps —
@@ -219,7 +220,7 @@ chatRouter.post("/:projectId", async (c) => {
     // If user attached an image, force a vision-capable model.
     // Must stay in sync with VISION_MODEL in lib/models.ts so the dropdown
     // doesn't lie to the user about which model handled their request.
-    const VISION_MODEL = "openai/gpt-4.1";
+    const VISION_MODEL = "anthropic/claude-sonnet-5";
     let effectiveModel = imageList.length > 0 ? VISION_MODEL : model;
 
     if (imageList.length > 0 && model !== VISION_MODEL) {
@@ -326,6 +327,14 @@ chatRouter.post("/:projectId", async (c) => {
         ? `\n${TASTE_RULES}\n`
         : "";
 
+    // House style: the concrete premium-build recipes (cinematic hero, scroll
+    // reveals, per-industry palette, section rhythm) layered on top of the
+    // taste rules for BUILD and CINEMATIC. Same gate as tasteBlock.
+    const houseBlock =
+      (mode === "build" || mode === "cinematic") && tasteEnabled
+        ? `\n${HOUSE_STYLE}\n`
+        : "";
+
     // Strategy source-of-truth: prepend the digest to BUILD and CINEMATIC
     // prompts when a prior research run wrote one. Honors the digest on every
     // subsequent edit without the user having to remind the pet.
@@ -337,6 +346,7 @@ chatRouter.post("/:projectId", async (c) => {
     const fullSystemPrompt = `
       ${basePrompt}
       ${tasteBlock}
+      ${houseBlock}
       ${strategyBlock}
       ${memoryBlock}
       ${historyBlock}

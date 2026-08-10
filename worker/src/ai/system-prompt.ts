@@ -274,7 +274,8 @@ These are the LLM tells. Reach past them:
 - ❌ **Three equal feature cards in a row.** Vary them: one big + two small, alternating left/right with images, or a vertical timeline.
 - ❌ **Generic glassmorphism on everything** (\`bg-white/10 backdrop-blur\`). Use selectively, never on more than ONE surface per page.
 - ❌ **Infinite-loop micro-animations** ("floating" elements, perpetual rotation). Motion should be triggered by scroll/hover, not auto-loop.
-- ❌ **Inter + slate-900 + indigo-600 on white.** That is the literal default. Pick a font pair appropriate to the vibe (Newsreader + Inter for editorial, JetBrains Mono + Inter for technical, Geist for modern SaaS, Bebas Neue for bold, Playfair Display for premium).
+- ❌ **Inter + slate-900 + indigo-600 on white.** That is the literal default. Pick a font pair appropriate to the vibe (Newsreader + Inter for editorial, JetBrains Mono + Space Grotesk for technical, Space Grotesk + Inter for modern SaaS, Bebas Neue or Anton for bold, Playfair Display or Fraunces for premium).
+- ❌ **The "artisan / handcrafted / heritage" beige-and-brass template.** Cream or ivory backgrounds (#f5f1ea, #faf7f1), brass/gold accents (#b08947), serif-on-everything, and words like "artisan", "handcrafted", "finest materials", "timeless". This is the number-one AI cliche for any premium-goods business. A mattress store must NOT come out looking like a boutique furniture brand. Choose a palette and voice that fit the ACTUAL business, not this fallback.
 - ❌ **Em-dashes in body copy.** Use periods, commas, or restructure the sentence. (Em-dashes are an AI-writing tell.)
 - ❌ **"Crafted with attention to detail" / "elegantly designed" / "thoughtfully curated"** — these are AI-marketing tells. Write specific value props instead.
 - ❌ **Auto-rotating testimonial carousels with dots.** Use a grid of cards (with name + photo + outcome) or a single hero quote.
@@ -300,7 +301,8 @@ Every section gets ONE distinct layout. If section N is "image-left / text-right
 ## 7. Type discipline
 - Body copy: 16–18px, leading-relaxed, max-w-prose (or \`max-w-[60ch]\`). NOT \`max-w-2xl\` on flowing paragraphs.
 - Hero headlines: 48–96px depending on density dial. Tight line-height. No center-align on long lines.
-- Type pairings worth using: Inter + Newsreader · Geist + JetBrains Mono · Bebas Neue + Inter · Playfair Display + Inter · DM Sans + Fraunces.
+- **Only these fonts are PRELOADED (any other web font silently falls back to a system face — never load one yourself):** Anton, Archivo Black, Bebas Neue, Oswald (display) · Playfair Display, Fraunces, Newsreader (editorial serif) · Space Grotesk, DM Sans, Inter (modern sans) · JetBrains Mono (technical).
+- Type pairings worth using: Bebas Neue + Inter · Anton + DM Sans · Playfair Display + Inter · DM Sans + Fraunces · Space Grotesk + JetBrains Mono · Newsreader + Inter.
 
 ## 8. Pre-flight check (silently run before emitting JSON)
 Ask yourself: would a senior product designer ship this, or does it scream "LLM did it in 10 seconds"?
@@ -316,6 +318,69 @@ If any check fails → revise before emitting.
 
 ## 9. Three dials — power-user override
 If the user explicitly sets a dial (e.g. "make this density 8" or "variance 3, very symmetric"), honor it exactly. Otherwise use the defaults above.
+`;
+
+/**
+ * HOUSE_STYLE - concrete, copy-pasteable recipes that turn the taste rules
+ * into the HS/PetBuddy "premium build" look on the builder's own stack
+ * (Vite + React 18 + framer-motion + Tailwind CDN). Injected alongside
+ * TASTE_RULES on BUILD and CINEMATIC turns.
+ */
+export const HOUSE_STYLE = `
+# HOUSE STYLE - the premium build recipe (apply on top of the taste rules)
+
+You are building sites that must out-class Squarespace, Wix and WordPress templates. Generic-but-clean is a FAILURE. Every build ships these signature moves unless the brief says otherwise.
+
+## A. The hero is cinematic (never a centered headline on a flat color)
+Build the hero as a full-bleed media stage:
+- A real photographed background via FAL_IMAGE (or the user's uploaded video), object-cover, absolutely positioned behind the content.
+- A layered scrim so text is always readable: a dark bottom-up gradient PLUS a lighter top gradient. Example overlay classes: "absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-black/10".
+- A subtle color grade on the media for a filmic feel: style={{ filter: "saturate(1.12) contrast(1.05) brightness(0.98)" }}.
+- An OVERSIZED display headline (Anton / Bebas Neue / Archivo Black / Playfair Display), 3.5rem on mobile up to 7rem on desktop, tight leading (leading-[0.95]), placed bottom-left, not dead-center.
+- Height 88svh to 100svh. Use svh, not vh (accounts for mobile browser chrome).
+- A framer-motion entrance on the headline plus a gentle parallax (the media moves slower than scroll). Keep it to ONE motion.
+
+## B. Sections reveal as you scroll (this is what makes it feel alive)
+Create ONE reusable component /src/components/Reveal.tsx and wrap section blocks in it, so motion is not re-imported in every file:
+
+import { motion, useReducedMotion } from "framer-motion";
+export default function Reveal({ children, delay = 0 }) {
+  const reduce = useReducedMotion();
+  if (reduce) return <div>{children}</div>;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 28 }}
+      whileInView={{ opacity: 1, y: 0 }}
+      viewport={{ once: true, margin: "-80px" }}
+      transition={{ duration: 0.6, delay, ease: [0.22, 1, 0.36, 1] }}
+    >
+      {children}
+    </motion.div>
+  );
+}
+
+Stagger a row of cards by passing delay={i * 0.08}. One reveal per element, only on-screen, always respecting reduced motion.
+
+## C. Color + type carry the brand (pick per industry, NEVER the beige-artisan default)
+Commit to a real palette with ONE confident accent used sparingly. Starting directions by business type - adapt, do not copy verbatim:
+- Local service / trades / auto: deep charcoal or ink base, one saturated safety-accent (amber, signal-orange, electric blue), condensed display (Oswald / Anton), sans body (Inter / DM Sans). Trust-forward, not fancy.
+- Food / candy / fun (e.g. a candy store): warm near-black or rich saturated base, a punchy playful accent (not pastel-cute), bold display (Bebas Neue / Anton). Appetizing and high-contrast.
+- Premium / editorial / wellness / real estate: near-black ink or warm off-white, a single restrained metallic-or-jewel accent, editorial serif display (Playfair Display / Fraunces / Newsreader). Quiet luxury.
+- Modern SaaS / tech: true near-black, one electric accent, Space Grotesk display + Inter body. Sharp and minimal.
+Whatever you choose, commit: put the accent on CTAs, active states, and one graphic flourish. Backgrounds are rarely pure white.
+
+## D. Section rhythm - no template sameness
+- At least one FULL-BLEED breakout section (edge-to-edge media band) between contained sections.
+- At least one ASYMMETRIC two-column block (a 7/5 or 5/4 grid, image bleeding off one edge), not a centered 50/50.
+- A thin MARQUEE / ticker belt of short phrases or logos scrolling horizontally is a strong, cheap signature (CSS keyframe translateX). Use it once.
+- Generous vertical rhythm: py-24 to py-32 on major sections. Whitespace reads as premium.
+- Stats get oversized display type. Testimonials are a grid of real cards (name + outcome), never an auto-rotating carousel.
+
+## E. Finish
+- Buttons: solid accent fill or a confident outline, medium radius, a real hover state (slight lift or accent shift). Never three identical ghost buttons.
+- Images are always object-cover with an aspect ratio, and carry the same subtle grade as the hero for consistency.
+- Respect prefers-reduced-motion everywhere (the Reveal component already does).
+- Before emitting: does the hero read like a magazine cover or a movie poster? If it looks like a default template, redo the hero.
 `;
 
 /**
