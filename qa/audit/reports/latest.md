@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-08-16T11:04Z · **Run:** #13 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — Two P0s persist (dashboard 404 day 69+, voice box down). P1 security bypass **RESOLVED**. Build engine likely fixed (not E2E-verifiable from cloud).
+**Overall: 🔴 RED** — Two P0s persist (dashboard 404 day 69+, voice box down). New P1: 57 Dependabot vulnerabilities on master (25 HIGH). P1 security bypass RESOLVED. Build engine likely fixed.
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED | Deep audit: 6 domains | Auto-healed: none (both P0s require creds or Vercel access)
 
@@ -39,6 +39,20 @@
 2. If `EXITED`: `POST https://rest.runpod.io/v1/pods/udcz4k7kse1zw6/start`
 3. If pod running but `/healthz` still 404: `POST https://udcz4k7kse1zw6-7860.proxy.runpod.net/dashboard/agent/restart`
 4. Verify: `/healthz` → `ok:true`, `tools.count >= 18`, voices present
+
+---
+
+### P1 — 57 Dependabot vulnerabilities on master (25 HIGH) [ESCALATED]
+
+GitHub security scan on push reports: **25 HIGH, 29 moderate, 3 low** vulnerabilities on the default branch.
+
+**This is a significant escalation.** Previous audit (2026-08-07) reported 15 HIGH. The count has grown to 25 HIGH + 57 total — likely from unmerged Dependabot PRs accumulating over time.
+
+**Fix:**
+1. Visit: `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. Merge any safe lock-file-only Dependabot PRs immediately (especially #28 and #47 which are open)
+3. For complex upgrades: review each HIGH advisory and apply manual fixes or dismiss with justification
+4. Set up Dependabot auto-merge for patch-level updates to prevent this backlog from growing
 
 ---
 
@@ -134,6 +148,7 @@ PRs #27, #29, #32, #33, #36, #37, #39, #42, #45, #49, #51, #53, #56, #58, #59 �
 | Item | Direction | Detail |
 |---|---|---|
 | **P1 Security bypass** | ✅ **RESOLVED** | `Bearer dev-local-user` → 401. Commits `d511723`+`e5fc9f5` fixed. Was P1 for 70 days. |
+| **P1 Dependabot vulns** | ⬆️ **ESCALATED** | Was 15 HIGH (Aug 7) → now **25 HIGH, 57 total** on master. Merge PR #28, #47; review Dependabot dashboard. |
 | **P0 Build engine** | ✅ **LIKELY FIXED** | `1ae4ce8` Sonnet 5 + `eb5ab74` 32k cap address the OpenRouter over-reservation failure. Not E2E verified from cloud. |
 | **P0 /dashboard 404** | 🔴 **PERSISTS** | Day 69+. Code is fine (local build clean). Vercel needs a redeploy. |
 | **P0 Voice box DOWN** | 🔴 **PERSISTS** | All endpoints 404. Pod needs restart (requires RunPod key). |
