@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-08-22T11:03Z · **Run:** #22 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — 2 P0 outages persist (dashboard 404 day-75+, voice box down). P1 dev-bypass is RESOLVED (fixed 2026-08-09). Build engine health unknown (E2E test spec stale since bypass removal).
+**Overall: 🔴 RED** — 2 P0 outages persist (dashboard 404 day-75+, voice box down). P1 dev-bypass RESOLVED (fixed 2026-08-09) but **59 new GitHub vulnerabilities (25 HIGH) found on master**. Build engine health unknown (E2E test spec stale since bypass removal).
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED  |  Deep audit: 6 domains  |  Auto-healed: none (no cloud creds for RunPod/Vercel)
 
@@ -57,6 +57,19 @@ Until then: **verify the build engine manually** after each deployment — open 
 ### P2 — GitHub Import cannot be tested (same root cause) [NEW]
 
 `POST /api/github/import` also 401s with `Bearer dev-local-user`. Import route health is confirmed deployed (`/api/github/import` anon → 401 = correct gating). Functional import E2E needs the same `X-API-Key` fix above. Both sandpack unit guards pass (5/5 alias, 9/9 assets).
+
+---
+
+### P1 — 59 Dependabot vulnerabilities on master (25 HIGH) [ESCALATED]
+
+GitHub push scan reports: **59 vulnerabilities on `master` — 25 HIGH, 31 moderate, 3 low**.
+
+This is a sharp escalation from the "10 moderate" noted in the June 2026 reports. The two open Dependabot PRs (#28, #47) cover only 2 of these bumps; 57 more advisories remain unaddressed.
+
+**Fix immediately:**
+1. Review `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. Accept all Dependabot PRs for safe lock-file-only upgrades (especially the 25 HIGH severity ones).
+3. For any that require manual resolution, create patch PRs promptly.
 
 ---
 
