@@ -53,9 +53,9 @@ Then update `qa/audit/audit-probe.mjs` line 137 to use `X-API-Key: <AUDIT_API_KE
 
 ---
 
-### P2 — 8 HIGH npm vulnerabilities (16 total)
+### P2 — 35 HIGH npm vulnerabilities (74 total across all roots)
 
-`npm audit` this run: **16 vulnerabilities** (8 high, 7 moderate, 1 low). Improved from 33 HIGH in the 2026-09-04 report, but two Dependabot PRs that would clear more remain unmerged:
+GitHub Dependabot full-repo scan: **74 vulnerabilities** (35 high, 35 moderate, 4 low) across all three package roots (root, `worker/`, `mcp-server/`). Local `npm audit` in root only shows 8 HIGH / 16 total — the higher count reflects the worker and mcp-server packages. Two Dependabot PRs remain unmerged that would reduce this:
 
 - **PR #28** (`dependabot/npm_and_yarn/npm_and_yarn-5984bbb696`) — "bump npm_and_yarn group across 3 directories with 2 updates" — open **79 days**.
 - **PR #47** (`dependabot/npm_and_yarn/mcp-server/npm_and_yarn-04db377a11`) — "bump fast-uri 3.1.2→3.1.4 in /mcp-server" — open **47 days**.
@@ -141,7 +141,7 @@ Cascading render risk — can cause infinite loops under concurrent rendering. W
 | Dashboard 404 | 🔴 PERSISTS (day ~90) | No change |
 | Voice box down | 🔴 PERSISTS (day ~63) | No change |
 | P1 dev bypass | ✅ RESOLVED (confirmed again) | ENVIRONMENT=production, no DEV_BYPASS_AUTH |
-| Vuln count | ✅ IMPROVED | 33 HIGH → 8 HIGH (16 total). `5cef645` cleared most; 2 dependabot PRs still pending. |
+| Vuln count | ⚠️ 35 HIGH / 74 TOTAL | GitHub full-repo scan: 35 HIGH (vs last report's 33). Root-only npm audit shows 8 HIGH (frontend) — worker+mcp roots add 27 more HIGH. 2 dependabot PRs still unmerged. |
 | Build engine | ⚠️ STILL UNVERIFIED | Last GREEN: 2026-06-07. Audit credential gap confirmed. |
 | ESLint / hooks bugs | 🔄 UNCHANGED | fetchTemplates, setState-in-effect still present |
 
