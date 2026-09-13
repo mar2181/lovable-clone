@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-09-13T11:00Z · **Run:** #17 (scheduled, 3-day cadence) · **Mode:** cloud / secret-free
-**Overall: 🔴 RED** — Two chronic P0 outages (dashboard 404 day ~97 + voice box DOWN day ~70) persist with no evidence of repair. Build engine E2E untestable from cloud (correct auth fix side-effect). Security posture improved: P1 dev-bypass confirmed resolved.
+**Overall: 🔴 RED** — Two chronic P0 outages (dashboard 404 day ~97 + voice box DOWN day ~70) persist with no evidence of repair. Build engine E2E untestable from cloud (correct auth fix side-effect). **NEW: 4 CRITICAL + 37 HIGH vulnerabilities on master** (GitHub Dependabot). P1 dev-bypass confirmed resolved.
 
 > Probe: 10 GREEN · 6 YELLOW · 2 RED  |  Deep audit: 6 domains  |  Auto-healed: none (no cloud creds for operational fixes)  |  Master commits since last audit: 0
 
@@ -57,16 +57,25 @@ Add `AUDIT_API_KEY` to the cloud scheduled agent environment. Update `qa/audit/a
 
 ---
 
-### P2 — Dependabot security PRs aging (87 + 54 days)
+### P1 — 4 CRITICAL + 37 HIGH vulnerabilities on master (WORSENING)
 
-| PR | Title | Age | Severity |
+**GitHub Dependabot scanner (authoritative):** `93 total` on default branch — **4 critical, 37 high, 47 moderate, 5 low** (per push-to-origin feedback this run).
+
+This is UP from 35 HIGH / 74 total (2026-09-07). The 4 CRITICAL advisories are new and not previously seen. Full advisory list: https://github.com/mar2181/lovable-clone/security/dependabot
+
+*Note: local `npm audit` only showed 14 HIGH / 72 total across all three package roots — GitHub's GHSA scanner catches more transitive dependencies.*
+
+**Unmerged Dependabot PRs:**
+
+| PR | Title | Age | Status |
 |---|---|---|---|
-| **#28** | bump npm_and_yarn group across 3 directories | **87 days** | moderate |
-| **#47** | bump fast-uri 3.1.2→3.1.4 in /mcp-server | **54 days** | moderate |
+| **#28** | bump npm_and_yarn group across 3 directories (2 packages) | **87 days** | OPEN |
+| **#47** | bump fast-uri 3.1.2→3.1.4 in /mcp-server | **54 days** | OPEN |
 
-Current npm audit totals (this run): ROOT 7 HIGH / 34 total · WORKER 5 HIGH / 28 total · MCP-SERVER 2 HIGH / 10 total = **14 HIGH / 72 total** (down from 35 HIGH in last run, reflecting npm audit re-scoring, not a merged fix).
-
-**Fix:** Review and merge PRs #28 and #47 from GitHub. Both are lock-file-level bumps with low risk.
+**Fix:** 
+1. Immediately review the 4 CRITICAL advisories at the Dependabot URL above.
+2. Merge PRs #28 and #47 — safe lock-file-level bumps.
+3. Accept any additional safe Dependabot PRs that GitHub generates for the remaining advisories.
 
 ---
 
@@ -150,7 +159,7 @@ Master HEAD: `eb5ab744` (unchanged since 2026-09-07 — 6 days idle).
 | P2 Dependabot PRs #28, #47 | 🔴 PERSISTS | Now 87 + 54 days. |
 | P2 middleware.ts rename | 🔴 PERSISTS | 4th month flagged. |
 | **Security — dev bypass** | ✅ CONFIRMED GREEN | P1 from June now fully confirmed off in prod. |
-| Total HIGH vulns | ⬇️ IMPROVED | 35 HIGH → 14 HIGH (npm audit rescoring, not merged fixes). |
+| GitHub Dependabot vulns | 🔴 WORSENED | 74 total (35H) → 93 total (4 CRITICAL + 37H). Merging PRs #28+#47 is not keeping pace. |
 | Master activity | ℹ️ IDLE | 0 commits since 2026-09-07. |
 | Stale audit PRs | 🔴 WORSENING | +1 PR, now 22. No PRs reviewed or closed. |
 
