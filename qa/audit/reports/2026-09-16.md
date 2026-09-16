@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-09-16T11:06Z · **Run:** #3 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — 2 new P0s since last audit (voice box pod stopped; dashboard 404 for unauthenticated users). Previous P1 security bypass CONFIRMED RESOLVED.
+**Overall: 🔴 RED** — 2 new P0s (voice box down, dashboard 404). **NEW P1: 94 Dependabot CVEs (4 critical, 38 high)** discovered at push. Previous P1 security bypass CONFIRMED RESOLVED.
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED  |  Deep audit: 6 domains  |  Auto-healed: none (cloud run — no RunPod/Vercel creds)
 
@@ -24,6 +24,21 @@ The RunPod pod that hosts the Pet Concierge voice box is stopped. The RunPod CDN
 3. **If the pod was terminated (not just stopped):** it will have a new pod ID. Update `next.config.ts` line 13 (`/boxapi` rewrite destination) to the new `*.proxy.runpod.net` URL, commit, push, and redeploy Vercel.
 
 **Short-term rollback while pod is down:** remove `data-backend="selfhosted"` and `data-connect-url="/boxapi"` from `components/pet-concierge.tsx` lines 99–100 to restore ElevenLabs fallback.
+
+---
+
+### P1 — 94 Dependabot CVEs on master (4 critical, 38 high, 47 moderate, 5 low) [NEW — ESCALATED]
+
+GitHub pushed back with a Dependabot alert when this audit branch was pushed:
+> *"GitHub found 94 vulnerabilities on mar2181/lovable-clone's default branch (4 critical, 38 high, 47 moderate, 5 low)."*
+
+This is a dramatic escalation from the 10 moderate advisories noted in the June 2026 audit. The 4 critical + 38 high entries likely include transitive dependencies surfaced by recent Dependabot database expansion, but they require triage.
+
+**Fix:**
+1. Go to `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. Filter by "Critical" first → triage each: is it in a production code path? Review Dependabot's auto-fix PR if one exists.
+3. Accept Dependabot lock-file-only bumps that are auto-approved (safe to merge without reviewing diffs manually).
+4. The two stale Dependabot branches already in this repo may cover some of these: `dependabot/npm_and_yarn/mcp-server/…` and `dependabot/npm_and_yarn/npm_and_yarn-…` (see §GitHub Reconciliation).
 
 ---
 
