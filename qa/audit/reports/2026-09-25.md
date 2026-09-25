@@ -1,13 +1,30 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-09-25T11:13Z · **Run:** #12 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🟡 YELLOW** — P1 dev-bypass fully resolved. Voice box down 79+ days. Build engine untestable (audit credential invalidated by 2026-08-09 security hardening — needs runbook update). Frontend build clean.
+**Overall: 🔴 RED** — 94 Dependabot vulnerabilities on master (4 critical, 38 high). Voice box down 79+ days. Build engine untestable (audit credential gap). P1 dev-bypass resolved.
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED (1 confirmed real, 1 probe misconfiguration) | Deep audit: 4 domains | Auto-healed: none
 
 ---
 
 ## 🚩 Needs Mario (ranked P0 → P3)
+
+### P1 — 94 Dependabot vulnerabilities on master (4 CRITICAL, 38 HIGH) [NEW/ESCALATED]
+
+Discovered at push time: GitHub reports **94 vulnerabilities** on the default branch (`master`) — a massive escalation from the 10 moderate advisories noted in the June 7 report.
+
+```
+GitHub found 94 vulnerabilities on mar2181/lovable-clone's default branch
+  4 critical · 38 high · 47 moderate · 5 low
+```
+
+**Fix:**
+1. Go to: `https://github.com/mar2181/lovable-clone/security/dependabot`
+2. Review the critical and high advisories first. Accept Dependabot's PRs for safe lock-file-only upgrades.
+3. Merge open Dependabot PRs #28 and #47 (see GitHub Reconciliation section) as first steps.
+4. The full list likely includes transitive dependency vulnerabilities from the 3+ month backlog. Consider enabling Dependabot auto-merge for patch-level bumps.
+
+---
 
 ### P0-AUDIT — Build engine untestable: audit credential (`Bearer dev-local-user`) disabled in prod [NEW — systemic gap since 2026-08-09]
 
