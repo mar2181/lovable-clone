@@ -52,31 +52,38 @@ Either fix requires a Vercel redeploy to take effect.
 
 ---
 
-### P1 — Critical CVE in `next` package [NEW]
+### P1 — 94 vulnerabilities across full repo (4 critical, 38 high) [PERSISTS]
 
-`npm audit` reports **1 CRITICAL + 7 HIGH vulnerabilities** (down from 94 last run — most fixed — but the `next` package itself now has a critical CVE):
+GitHub Dependabot reports **94 total vulnerabilities** on master (`4 critical, 38 high, 47 moderate, 5 low`) — same count as last run (2026-09-25). See `https://github.com/mar2181/lovable-clone/security/dependabot`.
+
+Frontend-only `npm audit` breakdown: **1 critical (`next`), 7 high** — the `next` package itself has a critical CVE, which is the most urgent to patch:
 
 | Severity | Package | Notes |
 |---|---|---|
-| **CRITICAL** | `next` | Next.js itself — check `npm audit` for CVE details |
+| **CRITICAL** | `next` | Next.js itself — check GitHub advisories for CVE + fixed version |
 | HIGH | `brace-expansion` | |
 | HIGH | `browserslist` | |
-| HIGH | `fast-uri` | |
+| HIGH | `fast-uri` | mcp-server Dependabot PR #47 already open |
 | HIGH | `ip-address` | |
 | HIGH | `js-yaml` | |
 | HIGH | `nanoid` | |
 | HIGH | `sharp` | |
 
-The critical `next` vulnerability is the highest-priority dependency to patch.
+The remaining 77 vulnerabilities are in `worker/` and `mcp-server/` packages.
 
 **Fix:**
 ```bash
-npm audit fix          # safe lock-file-only fixes first
-npm audit              # review remaining manually
-npm audit fix --force  # only for packages you've verified safe
-# Then: git add package-lock.json && git commit && git push → Vercel redeploy
+# Frontend:
+npm audit fix          # lock-file-only safe fixes
+npm audit fix --force  # only after reviewing each package
+git add package-lock.json && git commit && git push  # triggers Vercel redeploy
+
+# Worker:
+cd worker && npm audit fix
+
+# MCP server: merge Dependabot PR #47 (fast-uri bump — already open)
 ```
-For `next` critical: check `https://github.com/vercel/next.js/security/advisories` for the CVE + patch version.
+For `next` critical: check `https://github.com/vercel/next.js/security/advisories` for the exact CVE and patch version before force-upgrading.
 
 ---
 
@@ -144,8 +151,8 @@ Master HEAD: `eb5ab74` (chat: cap AI output at 32k tokens)
 
 | Item | Direction | Detail |
 |---|---|---|
-| Vulnerability count | ✅ IMPROVED | 94 → 17 direct (1 critical + 7 high). Most moderate/low advisories addressed. |
-| **CRITICAL `next` CVE** | 🆕 NEW | `next` package flagged critical — was not present in prior run counts. Patch urgently. |
+| Vulnerability count | 🔴 PERSISTS | 94 total (full repo, per GitHub Dependabot) — same as 2026-09-25. Frontend: 1 critical (`next`) + 7 high. |
+| **CRITICAL `next` CVE** | 🔴 CONFIRM | `next` package flagged critical in frontend `npm audit`. Patch urgently. |
 | Voice box down | 🔴 PERSISTS | Day 85+ (was 82+ on 2026-09-25). No change. |
 | Dashboard 404 | 🔴 PERSISTS | Day 110+ (was ~107+ on 2026-09-25). No change. |
 | P1 dev-bypass | ✅ CONFIRMED RESOLVED | `ENVIRONMENT=production` in `wrangler.toml` — bypass off in prod. |
