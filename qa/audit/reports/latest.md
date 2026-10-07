@@ -1,13 +1,30 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-10-07T11:13Z · **Run:** #12 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🔴 RED** — P0 Voice Box fully down; build engine E2E unverifiable in cloud (auth gap); dashboard auth misconfiguration (P2). Core worker infra healthy. P1 security RESOLVED.
+**Overall: 🔴 RED** — P1 active (108 GitHub security vulnerabilities: 4 critical, 41 high); P0 Voice Box fully down; P2 dashboard auth misconfiguration; build engine E2E unverifiable. 
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED  |  Deep audit: 5 of 6 domains  |  Auto-healed: none (operational fix blocked — no RUNPOD_API_KEY in cloud)
 
 ---
 
 ## 🚩 Needs Mario (ranked P0 → P3)
+
+### P1 — 108 GitHub security vulnerabilities on master (4 critical, 41 high) [NEW — DISCOVERED AT PUSH]
+
+`git push` to GitHub returned:
+> "GitHub found 108 vulnerabilities on mar2181/lovable-clone's default branch (**4 critical, 41 high**, 55 moderate, 8 low)."
+
+This contradicts the June report finding that `5cef645` "cleared all 44 dependabot alerts". Either:
+1. The fix dismissed the alerts without actually upgrading the packages, OR
+2. New vulnerabilities were discovered in the packages since August.
+
+**Immediate action required:**
+1. Review the full advisory list: https://github.com/mar2181/lovable-clone/security/dependabot
+2. For critical/high advisories, accept Dependabot's auto-PRs (if they exist) — these are typically lock-file-only upgrades.
+3. The 2 Dependabot branches already open (`npm_and_yarn-5984bbb696`, `mcp-server/npm_and_yarn-04db377a11`) likely address some of these — **review and merge promptly**.
+4. If no Dependabot PRs exist for the criticals, manually bump affected packages.
+
+---
 
 ### P0 — Voice Box / Pet Concierge completely down [REGRESSION from June GREEN]
 
@@ -135,7 +152,7 @@ The audit has generated 36 branches (`audit/report-2026-06-10` through `audit/re
 | **Security: dev-bypass-prod** | 🟢 GREEN (RESOLVED) | `Bearer dev-local-user` → 401 in prod. `wrangler.toml` now has `ENVIRONMENT="production"`, `DEV_BYPASS_AUTH` absent. Fixed 2026-08-09 (d511723). Auth.ts bypass code still present but `isOwner=false` and only triggers in dev. |
 | **Security: .dev.vars** | 🟢 GREEN | `.gitignore:53` covers `worker/.dev.vars`. Not tracked, not in history. |
 | **Voice box wiring (code)** | 🟢 GREEN | `pet-concierge.tsx`: `data-backend="selfhosted"` + `/boxapi`. `next.config.ts`: `/boxapi → https://udcz4k7kse1zw6-7860.proxy.runpod.net/:path*`. Wiring coherent — box just needs to be started. |
-| **Dependabot advisories** | 🟢 GREEN (RESOLVED) | 44 advisories cleared in `5cef645`. 0 security advisories currently open on master. |
+| **Dependabot advisories** | 🔴 RED (REGRESSED) | `5cef645` was supposed to clear 44 advisories. However, `git push` revealed **108 active vulnerabilities on master** (4 critical, 41 high, 55 moderate, 8 low). See §Needs-Mario P1 above. |
 
 ---
 
@@ -186,7 +203,7 @@ New commits since June 7 audit (15 total):
 | Item | Direction | Detail |
 |---|---|---|
 | **P1 dev-bypass-prod** | ✅ **RESOLVED** | `ENVIRONMENT=production` in wrangler.toml (d511723, 2026-08-09). Bearer dev-local-user → 401. |
-| **44 Dependabot advisories** | ✅ **RESOLVED** | All cleared in 5cef645. |
+| **Dependabot advisories** | 🔴 **REGRESSED** | `5cef645` claimed to clear 44 advisories, but `git push` revealed 108 active (4 critical, 41 high). Open Dependabot PRs still unmerged. |
 | **fix/sanitizer-icon-imports branch** | ✅ **GONE** | Cleaned up since last run. |
 | **archive/* + backup/* branches** | ✅ **GONE** | Cleaned up. |
 | **Voice Box** | 🔴 **P0 REGRESSION** | Was GREEN (healthz ok, 18 tools) in June. Now fully down (404 on / and /healthz). Wiring still correct. |
