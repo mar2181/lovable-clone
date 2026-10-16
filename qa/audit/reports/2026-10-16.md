@@ -1,7 +1,7 @@
 # HS Web App Builder — Audit Report
 
 **Date:** 2026-10-16T11:14Z · **Run:** #15 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky  
-**Overall: 🔴 RED** — three P0/P1 items persist unresolved; dashboard 404 now day ~130, voice box day ~101, MCP_API_KEY still committed in git (day 3).
+**Overall: 🔴 RED** — four P0/P1 items persist unresolved; MCP_API_KEY committed (day 3), 123 GitHub security vulns (6 critical), dashboard 404 day ~130, voice box day ~101.
 
 > Probe: 6 GREEN · 9 YELLOW · 2 RED | Deep audit: 6 domains | Auto-healed: none (cloud run; RUNPOD_API_KEY unavailable)
 
@@ -84,11 +84,16 @@ Worker `/health` → 200 ✅ (process alive). Last confirmed successful E2E: 202
 
 ---
 
-### P2 📦 — npm audit: 28 high/critical vulnerabilities (2 critical) [UNCHANGED]
+### P1 📦 — 123 GitHub security vulnerabilities on master (6 critical) [ESCALATED from P2]
 
-`npm audit` reports 56 total (2 critical, 17 high, 9 moderate across frontend). Two Dependabot PRs have been open since June/July (PRs #28 and #47 below) and not merged.
+**Confirmed at push.** GitHub Advisory Database (GHSA) reports at push time:
+> "GitHub found 123 vulnerabilities on mar2181/lovable-clone's default branch (6 critical, 45 high, 62 moderate, 10 low)."
 
-**Fix:** `npm audit fix` for lock-file-only safe upgrades; review PRs #28 and #47 (safe bumps — see GitHub reconciliation section).
+Local `npm audit` (lock file only) reports 56 total / 28 critical+high+moderate (2 critical, 17 high, 9 moderate). The higher GitHub count includes transitive deps not surfaced by npm's advisory registry. **6 critical is an escalation from 2 critical in Oct 13.** Details at: https://github.com/mar2181/lovable-clone/security/dependabot
+
+Two Dependabot PRs have been open since June/July (PRs #28 and #47 — see GitHub reconciliation section). **Merging these will reduce the count.**
+
+**Fix:** Review `https://github.com/mar2181/lovable-clone/security/dependabot` to see all 123 advisories. Accept Dependabot PRs #28 and #47 immediately (safe lock-file bumps). For remaining critical vulns, run `npm audit fix` locally, check for breaking changes, then `npm ci && npm run build` before pushing.
 
 ---
 
@@ -151,7 +156,7 @@ All pushed by this automated audit, never merged to master (by design). No actio
 | P0 Voice box down | 🔴 Day ~98 | 🔴 Day ~101 | **No fix** |
 | P1 dev-bypass-prod | ✅ RESOLVED | ✅ RESOLVED | Stable |
 | P2 Build E2E cloud | 🟡 Blocked run 4+ | 🟡 Blocked run 7+ | No change |
-| npm audit vulns | 28 critical/high/mod | 28 critical/high/mod | No change |
+| GitHub vulns | 28 critical/high/mod (local) | 123 total / 6 critical (GitHub GHSA) | **ESCALATED — 6 critical (was 2)** |
 | Unit guards | 🟢 14/14 | 🟢 14/14 | Stable |
 | Worker infra | 🟢 GREEN | 🟢 GREEN | Stable |
 
