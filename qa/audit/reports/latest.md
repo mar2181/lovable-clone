@@ -1,94 +1,80 @@
 # HS Web App Builder — Audit Report
 
-**Date:** 2026-06-07T11:04Z · **Run:** #2 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky
-**Overall: 🟡 YELLOW** — infrastructure healthy and build engine RESTORED. P1 security bypass persists; fix confirmed safe but requires Mario's ownership-check before deploy.
+**Date:** 2026-10-22T11:20Z · **Run:** #17 (scheduled, 3-day cadence) · **Mode:** auto-fix safe / flag risky  
+**Overall: 🔴 RED** — P1 committed MCP key persists (day 9 unresolved). 2 P0 outages continue (dashboard day ~136, voice box day ~107). One prior P1 (dev-bypass-prod) remains RESOLVED.
 
-> Probe: 7 GREEN · 9 YELLOW · 1 RED  |  Deep audit: 6 domains  |  Auto-healed: none
+> Probe: 6 GREEN · 9 YELLOW · 2 RED | Deep audit: completed | Auto-healed: none (cloud run; RUNPOD_API_KEY unavailable)
 
 ---
 
-## 🚩 Needs Mario (ranked P0 → P3)
+## 🚩 Needs Mario (ranked P1 → P0 → P0)
 
-### P1 — Anyone can be owner in prod (`Bearer dev-local-user`) [PERSISTS]
+### P1 🔑 — MCP_API_KEY hardcoded in `mcp-server/lovable.sh` [PERSISTS — day 9, unresolved since Oct 13]
 
-`wrangler.toml [vars]` ships **`ENVIRONMENT = "development"`** (line 16) and **`DEV_BYPASS_AUTH = "1"`** (line 17) into the live Cloudflare Worker. Live confirmation: `GET /api/credits` → `{"tier":"unlimited","balance":9999}` with no Clerk JWT.
-
-Auth gate in `worker/src/middleware/auth.ts` lines 62–74:
-```ts
-const devBypassEnabled =
-  c.env.ENVIRONMENT === "development" || c.env.DEV_BYPASS_AUTH === "1";
-if (devBypassEnabled && authHeader === "Bearer dev-local-user") {
-  // → registerOwnerIfAdmin + unlimited credits — owner-level access
-}
+**Confirmed live today.** `mcp-server/lovable.sh` line 6:
+```bash
+API_KEY="${MCP_API_KEY:-<REDACTED — see mcp-server/lovable.sh line 6>}"
 ```
-Because `DEV_BYPASS_AUTH="1"` is deployed in `[vars]`, `devBypassEnabled` is always `true` in production.
+This key matches the `MCP_API_KEY` auth path in `worker/src/middleware/auth.ts` (line ~41) — grants `isOwner: true`, full operator privileges: arbitrary Supabase Management SQL, GitHub PAT pushes, Vercel prod deploys, Twilio SMS. **The repo is public. Anyone can extract this key from git history and impersonate the owner in production.**
 
-**Fix (CONFIRM-FIRST — not auto-applied per policy.md):**
-1. **Verify ownership first:** log into hswebappbuilder.space with real Clerk credentials and confirm your projects still show.
-2. Edit `worker/wrangler.toml` — remove lines 16–17 from `[vars]`:
-   ```toml
-   # DELETE these two lines:
-   ENVIRONMENT = "development"
-   DEV_BYPASS_AUTH = "1"
+Key has been live in the public repo since commit `5ec5e08` ("feat(dashboard): add Duplicate/Clone project action") — visible since Oct 13 per previous audit. Now 9 days exposed.
+
+**Fix (ROTATE IMMEDIATELY — confirm-first per policy.md):**
+1. Generate a new random 64-char hex key — **do NOT reuse** the committed value.
+2. `cd worker && wrangler secret put MCP_API_KEY` (new value).
+3. Patch `mcp-server/lovable.sh` line 6: replace the hardcoded fallback with `${MCP_API_KEY:?MCP_API_KEY is required}` — fail loudly if unset, never fall through to a default.
+4. Rotate any credentials the key could have been used to extract (Supabase PAT, GitHub PAT, Vercel token) — the repo is public and key has been live 9 days.
+5. Purge from git history: `git filter-repo --path mcp-server/lovable.sh --invert-paths` (add cleaned version back), or BFG Repo Cleaner. Force-push to purge remote history, then notify any forks.
+
+---
+
+### P0 🌐 — Dashboard `/dashboard` returns cached 404 (day ~136) [PERSISTS]
+
+`/dashboard` → HTTP 404. Vercel response headers confirm:
+```
+HTTP/2 404
+x-clerk-auth-reason: protect-rewrite, session-token-and-uat-missing
+x-matched-path: /404
+x-vercel-cache: HIT   (age: 517801s ≈ 6 days of edge-cached stale 404)
+```
+
+**Root cause (established Run #14):** Clerk's `auth.protect()` in `middleware.ts` does a `protect-rewrite` to /404 for unauthenticated requests because `NEXT_PUBLIC_CLERK_SIGN_IN_URL` is not set in Vercel env vars — Clerk's `createRedirect()` produces an invalid URL and rewrites to /404 instead of redirecting to /sign-in. Vercel's edge CDN then caches that 404 indefinitely.
+
+The app route (`app/dashboard/page.tsx`) and `/sign-in` both exist and build correctly (verified today). This is purely a middleware/env-var/cache bug.
+
+**Fix (three steps, all required):**
+1. **Patch `middleware.ts`** — explicit redirect instead of `auth.protect()`:
+   ```ts
+   const { userId } = await auth()
+   if (!userId) {
+     const signInUrl = new URL('/sign-in', request.url)
+     signInUrl.searchParams.set('redirect_url', request.url.toString())
+     return NextResponse.redirect(signInUrl)
+   }
    ```
-3. These values belong only in `worker/.dev.vars` (which IS already gitignored — confirmed safe).
-4. `cd worker && wrangler deploy`
-5. Verify `/api/credits` with `Bearer dev-local-user` now returns 401.
+   OR pass the unauthenticated URL: `await auth.protect({ unauthenticatedUrl: new URL('/sign-in', request.url).toString() })`
+2. **Add Vercel env vars** (confirmed missing — `grep` found no `NEXT_PUBLIC_CLERK_SIGN_IN_URL` in the repo):
+   - `NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in`
+   - `NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up`
+3. **Purge Vercel edge cache** after deploy — use Vercel dashboard "Purge Cache" or full redeploy. The edge-cached 404 will otherwise persist until TTL expires.
 
 ---
 
-### ✅ Build Engine: RESTORED (was P0 in baseline)
+### P0 🎙️ — Voice box pod DOWN (day ~107) [PERSISTS]
 
-**SSE E2E confirmed live:**
-- POST /api/projects → 201, id `sDUOcNFuyb`
-- POST /api/build with SSE → `build_start` (4 pages, 2 batches) → `page_status`×4 → `batch_stream` chunks → **`build_complete` — 22 files**
-- Files: `App.tsx`, `index.tsx`, `styles.css`, 4 page components, Header/Footer, 10 UI components, `utils/constants`, `__lovable_select_runtime.ts`
-- **Zero `type:"error"` events. Zero "Insufficient credits" messages.** OpenRouter credits are replenished.
-- DELETE → 200 `{"success":true}` ✅
+`GET https://udcz4k7kse1zw6-7860.proxy.runpod.net/healthz` → **HTTP 404** (pod stopped or proxy expired).
 
-**P2 — Build latency approaching timeout (new concern):** The 4-page build took 180–200 seconds, racing the default 180s curl timeout. A first attempt timed out; a second run with 200s completed. Larger prompts risk hard timeout. Consider increasing the SSE client timeout to 240s or adding a server-side stream keepalive ping.
+Repo wiring verified correct today: `pet-concierge.tsx` has `data-backend="selfhosted"` and `data-connect-url="/boxapi"` (lines 99-100), and `next.config.ts` proxies `/boxapi/* → https://udcz4k7kse1zw6-7860.proxy.runpod.net/*` (lines 12-13). The pod is simply off.
 
----
-
-### P1/P2 — GitHub: 10 Dependabot moderate advisories on master [NEW — discovered at push]
-
-During the `git push` of this audit branch, GitHub reported:
-> "GitHub found 10 vulnerabilities on mar2181/lovable-clone's default branch (10 moderate)."
-
-The hono PR #21 (4 GHSA advisories) was just merged this run, so these 10 are distinct — likely `npm` or transitive dep vulnerabilities not yet surfaced as PRs. Check:  
-`https://github.com/mar2181/lovable-clone/security/dependabot`
-
-**Fix:** review each advisory, accept Dependabot's PRs for any that are safe lock-file-only upgrades.
-
----
-
-### P2 — `template-picker.tsx:80`: `fetchTemplates` called before declaration [NEW]
-
-ESLint reports a React hooks immutability/hoisting violation: `fetchTemplates` is accessed inside a `useEffect` before it is declared. This creates a stale-closure risk at runtime — the effect may capture an undefined or outdated version of the function.
-
-**File:** `components/dashboard/template-picker.tsx:80`
-**Fix:** move the `fetchTemplates` declaration above the `useEffect` that calls it, or include it in the `useCallback` pattern.
-
----
-
-### P2 — `web_search` likely dead (`TAVILY_API_KEY` unset) [PERSISTS]
-
-`wrangler.toml` has no `TAVILY_API_KEY` or `FIRECRAWL_API_KEY` in secrets. Worker code degrades gracefully (`"TAVILY_API_KEY is not configured"`). Could not confirm live because the OpenRouter outage blocks model turns before tools fire.
-
-**Fix:** after resolving P0, run a chat turn forcing web search. If unavailable: `cd worker && wrangler secret put TAVILY_API_KEY`.
-
----
-
-### P3 — `middleware.ts` → `proxy.ts` rename needed [NEW]
-
-`next build` emits a deprecation warning: the `middleware` file convention is removed in Next.js 16+. The file must be renamed to `proxy` before the next major Next upgrade breaks the proxy layer entirely.
-
-**Fix (repo edit — flag):** `git mv middleware.ts proxy.ts` (and update any imports), then test the worker proxy routes, then `wrangler deploy` / Vercel redeploy.
-
----
-
-## 🔧 Auto-healed this run
-**None needed.** No operationally-fixable RED was present. The P1 requires Mario's confirm-first workflow (per policy.md). Pod, box, and worker are all operationally up.
+**Fix (local, needs RUNPOD_API_KEY — cloud can't auto-fix):**
+```bash
+curl -X POST "https://rest.runpod.io/v1/pods/udcz4k7kse1zw6/start" \
+  -H "Authorization: Bearer $RUNPOD_API_KEY"
+# Wait ~60s, then verify:
+curl https://udcz4k7kse1zw6-7860.proxy.runpod.net/healthz
+```
+Per policy.md this is auto-fixable, but `RUNPOD_API_KEY` is unavailable in the cloud run.
+Storage charges continue at ~$0.69/hr even while stopped. No idle-shutdown controller exists.
 
 ---
 
@@ -96,83 +82,76 @@ ESLint reports a React hooks immutability/hoisting violation: `fetchTemplates` i
 
 | Domain | Verdict | Evidence this run |
 |---|---|---|
-| **Build engine** | 🟢 GREEN (RESTORED) | SSE E2E: `build_complete` + **22 files**, 4 pages (Home/About/Services/Contact), zero errors. OpenRouter credits replenished. Latency 180–200s on 4-page build — watch timeout (see §Needs-Mario). |
-| **Worker infra** | 🟢 GREEN | `/health` 200, `/api/spec.json` 200 (openapi 3.1.0), `/api/projects` anon → 401 (correct). Project CRUD functional. |
-| **GitHub Import** | 🟢 GREEN | Both Sandpack unit guards **PASS** (5/5 alias · 9/9 asset checks). Live import of `dan5py/react-vite-shadcn-ui` → **201**, 22 files, 0 failed, 0 errored. Cleanup 200. |
-| **Frontend HTTP** | 🟢 GREEN | `https://hswebappbuilder.space/` → 200; `/dashboard` → 200. |
-| **Frontend build** | 🟢 GREEN | `next build` (Next.js 16.2.6 Turbopack) clean in 11.3s; **TypeScript: 0 errors** (9.2s). 6 routes built (static + SSR). |
-| **Pet Concierge / Box** | 🟢 GREEN | `/healthz` → `ok:true`, build `2026-06-06-hsreels-tts`, **18 tools** (not stripped), voices `[will, jack]`, sessions 0/3. Wiring fully coherent: `data-backend="selfhosted"` → `data-connect-url="/boxapi"` → `next.config.ts /boxapi → https://udcz4k7kse1zw6-7860.proxy.runpod.net` (exact match). `agent_id` present. No auto-fallback gap. |
-| **Security — .dev.vars** | 🟢 GREEN | `.gitignore:53` covers `worker/.dev.vars`; `git ls-files worker/.dev.vars` → empty (not tracked, not in history). |
-| **Security — CORS** | 🟢 GREEN | `worker/src/index.ts` uses exact-match origin allowlist (not `*`). `credentials:true` is correct for auth. |
-| **Hono security bump** | 🟢 RESOLVED | PR #21 merged (`d612ffa`) — hono `4.12.18 → 4.12.23`, 4 GHSA advisories fixed. |
-| **Worker typecheck script** | 🟢 RESOLVED | `86e84ea` added `"typecheck":"tsc --noEmit"` to worker `package.json`. |
+| **P1 dev-bypass-prod** | 🟢 RESOLVED (was P1) | `GET /api/credits` with `Bearer dev-local-user` → 401. wrangler.toml `[vars]` now has `ENVIRONMENT = "production"` only. Commits `d511723` + `e5fc9f5` confirmed merged to master. |
+| **Worker infra** | 🟢 GREEN | `/health` → 200, `/api/spec.json` → 200 (openapi 3.1.0), `/api/projects` anon → 401 (correct gating). |
+| **GitHub import route** | 🟢 GREEN | `/api/github/import` anon → 401 (deployed + gated). |
+| **Frontend root** | 🟢 GREEN | `GET https://hswebappbuilder.space/` → 200. |
+| **Sandpack unit tests** | 🟢 GREEN | `test-sandpack-alias.ts` — **5/5 pass**; `test-sandpack-assets.ts` — **9/9 pass**. |
+| **Frontend TypeScript build** | 🟢 GREEN | `next build` (Turbopack 16.2.6) — compiled in 9.2s; **TypeScript: 0 errors** (7.5s). 6 routes (4 static, 2 dynamic). |
+| **Pet concierge wiring** | 🟢 GREEN | `data-backend="selfhosted"`, `data-connect-url="/boxapi"`, `next.config.ts:12-13` proxies `/boxapi → udcz4k7kse1zw6-7860.proxy.runpod.net`. Wiring intact; pod is off. |
+| **.dev.vars gitignored** | 🟢 GREEN | `.gitignore:53` covers `worker/.dev.vars`; not tracked. Probe YELLOW was wrong — confirmed correct. |
 
 ---
 
-## 🩹 Hygiene backlog (P3 — batched)
+## ⚠️ Cannot Verify From Cloud (flag for local testing)
 
-- **Pod billed 24/7** at `$0.69/hr ≈ ~$500/mo` with `active_sessions:0`. No idle-watcher/sleep controller. Needs an idle-shutdown + on-demand broker-wake flow.
-- **Telegram/SMS not configured** (`/api/share/health` → `telegram:false, sms:false`). In-app project sharing over phone is dark.
-- **ESLint: 130+ `@typescript-eslint/no-explicit-any`** across `worker/src/routes/` and `components/`. No type safety at API boundaries. Non-blocking but accumulates tech debt.
-- **ESLint: 80 warnings** — unused vars, missing `useEffect` deps, `<img>` vs `<Image />`, prefer-const. (234 total problems, 2 auto-fixable.)
-- **deploy/drift** — not verified (Vercel token absent in cloud run). Verify locally: `vercel ls` or check Vercel dashboard that HEAD `86e84ea` is deployed.
-- **pod-power** — not checked (RUNPOD_API_KEY absent in cloud). Verify locally: `curl https://rest.runpod.io/v1/pods/udcz4k7kse1zw6` with RunPod key.
-- **Voice box: no auto-fallback** if box dies (ElevenLabs is quota-dead; real fix is HA/uptime, not re-wiring EL).
-- **`GET /api/projects/<deleted-id>`** returns HTTP 200 with `{"error":"Project not found"}` — should be 404. Cosmetic.
-- **Next.js workspace warning** — stray `/home/mario/package-lock.json` confuses Turbopack's workspace root detection.
-
----
-
-## 🗂 GitHub Reconciliation (surface only — nothing merged)
-
-Master HEAD moved from `8cd0b87` → `86e84ea` since baseline (+4 commits: hono merge, QA harness, worker typecheck, deps bump). No drift to Vercel to confirm locally.
-
-| Branch | Age | What it is | Recommendation | Reason |
-|---|---|---|---|---|
-| **`claude/builder-buddy-rail`** (PR #20) | 3 days | Docked Space Mario assistant rail — builder UI right-panel, `buddy-panel.tsx`, `pc-embed.js`, recently re-pointed to live pod | **BRING IN FOR REVIEW** | Ready & tested per PR body; updated 2026-06-04 to live endpoint — no longer dead EL. Human review needed before merge. |
-| **`fix/sanitizer-icon-imports`** (PR #7) | 31 days | Bug fix: `fetchTemplates`-style "Home is not defined" red-screen — wires sanitizer into `template.ts`/`bridge.ts`/`blog.ts` + broadens icon regex | **REBASE THEN REVIEW** | Real bug fix content but PR base is 31 days behind master. Needs `git rebase master` + conflict resolution before actionable. |
-| **`archive/windows-side-2026-05-11`** | 27 days | One-shot Windows-checkout safety snapshot — commit message says "NOT meant to be merged" | **ARCHIVE (delete)** | Self-documenting parking spot; 0 unique work not in master. |
-| **`backup/pr13-pre-resolve-2026-05-12`** | 26 days | Pre-merge checkpoint for PR #13 | **ARCHIVE (delete)** | Pure backup, superseded by merge. |
-
-**Open issues:** 0.
-**Dependabot PRs:** 0 (PR #21 merged; no new advisories flagged this run).
-
----
-
-## Δ vs baseline (2026-06-07 first run)
-
-| Item | Direction | Detail |
+| Check | Why blocked | What to run locally |
 |---|---|---|
-| hono 4.12.23 security bump | ✅ RESOLVED | PR #21 merged `d612ffa` — 4 GHSA advisories fixed |
-| Worker `typecheck` script | ✅ RESOLVED | `86e84ea` added `"typecheck":"tsc --noEmit"` |
-| Build engine P0 (OpenRouter credits) | ✅ RESOLVED | Credits replenished — `build_complete` + 22 files confirmed live. Latency note: 180–200s for 4 pages. |
-| P1 dev-bypass-prod | 🔴 PERSISTS | `ENVIRONMENT=development` + `DEV_BYPASS_AUTH=1` still in `[vars]` |
-| PR #20 builder-buddy-rail | 🔄 UPDATED | Was IGNORE; now BRING IN (live pod re-pointed 2026-06-04) |
-| middleware→proxy rename | 🆕 NEW | Next.js deprecation warning surfaced in build |
-| template-picker.tsx:80 hook bug | 🆕 NEW | fetchTemplates before declaration — lint + runtime staleness risk |
-| P2 web_search TAVILY | ⚠️ STILL UNCONFIRMED | Build engine now up — verify next: run a chat turn forcing web_search; if "unavailable", `wrangler secret put TAVILY_API_KEY` |
-| Box wiring / proxy-target | ✅ VERIFIED | Deep audit confirms full chain coherent (previously YELLOW in probe) |
-| unit-guards | ✅ VERIFIED | Both Sandpack guards PASS (previously YELLOW in probe) |
-| .dev.vars gitignore | ✅ VERIFIED | Gitignored + not tracked (previously YELLOW in probe) |
+| **Build engine E2E** | Auth hardened (dev-bypass off) — no Clerk JWT in cloud | Sign in to hswebappbuilder.space, grab session token, then: `POST /api/projects`, `POST /api/build/<id>` (SSE, allow 180s+), confirm `build_complete` with files, `DELETE /api/projects/<id>`. Last confirmed working: Oct 19 run. |
+| **TAVILY web_search** | Requires model turn + Clerk auth | After confirming build works: run a chat turn forcing web_search. If "TAVILY_API_KEY is not configured" → `cd worker && wrangler secret put TAVILY_API_KEY`. |
+| **RunPod pod power state** | `RUNPOD_API_KEY` not set in cloud | `curl https://rest.runpod.io/v1/pods/udcz4k7kse1zw6 -H "Authorization: Bearer $RUNPOD_API_KEY"` |
+| **Vercel deploy drift** | `VERCEL_TOKEN` not set in cloud | Check https://vercel.com/mar2181's dashboard — latest commit on Vercel vs master head (`eb5ab74`). |
+| **Worker auto-redeploy self-heal** | `CLOUDFLARE_API_KEY` not set | N/A — worker is currently healthy |
+| **Telegram delivery** | Bot token not set in cloud | N/A — GitHub issue + email sent instead |
 
 ---
 
-## ⛔ Checks skipped for lack of cloud creds
+## 🩹 Hygiene backlog (P3)
 
-These require local/vault access. Owner's on-demand local run covers them:
+- **ESLint: 157 errors** (`no-explicit-any` throughout `worker/src/` — `build-orchestrator.ts:66`, `image-gen.ts:81`, `video-gen.ts:139/177/217`, `attachments.ts`, `templates/builder.ts`, `templates/pages.ts`); 79 warnings. Does not block build but masks type safety issues. Fix: add explicit types or use `unknown` + type guards.
+- **`middleware.ts` → `proxy.ts` rename** (Next.js 16 deprecation warning on every build). `git mv middleware.ts proxy.ts`, update any imports, redeploy. Required before any Next.js 17 upgrade.
+- **40+ open audit report PRs** clog the PR list — none ever merged (expected, per policy). Consider bulk-closing PRs older than 30 days via GitHub API.
+- **Dependabot PR #47** (`fast-uri 3.1.2→3.1.4` in mcp-server, 3 months old) — safe lockfile-only bump. **MERGE.**
+- **Dependabot branch** `npm_and_yarn-5984bbb696` (PR #28, 4 months old) — npm_and_yarn group across 3 dirs. **Review + merge safe bumps.**
+- **Pod billed 24/7** at ~$0.69/hr (storage) even while stopped. No idle-shutdown/sleep controller exists. Over 107 days this is ~$1,750 in storage charges while the pod delivers no value.
 
-| Check | Reason skipped | What to run |
+---
+
+## 🗂 GitHub Reconciliation (surface only — NEVER merged by this audit)
+
+| Branch / PR | Age | What it is | Recommendation |
+|---|---|---|---|
+| `claude/builder-buddy-rail` | ~4+ months | Docked Space Mario assistant rail, re-pointed to live pod | **REVIEW FOR MERGE** when voice box is back up |
+| `dependabot/…/mcp-server/npm_and_yarn-04db377a11` (PR #47) | 3 months | `fast-uri 3.1.2→3.1.4` in mcp-server | **MERGE** — safe lockfile bump, no API changes |
+| `dependabot/…/npm_and_yarn-5984bbb696` (PR #28) | 4 months | npm_and_yarn group across 3 dirs | **REVIEW + MERGE safe bumps** |
+| `audit/report-2026-*` (~40 branches + ~30 draft PRs) | 3 days–4 months | Each scheduled run's report | **CLOSE/ARCHIVE** PRs older than 30 days — use `gh pr list --state open --author app/claude --limit 100 \| awk '{print $1}' \| xargs -I{} gh pr close {}` to bulk-close |
+
+---
+
+## Δ vs previous (2026-10-19, Run #16)
+
+| Finding | Oct 19 | Oct 22 | Change |
+|---|---|---|---|
+| P1 MCP_API_KEY committed | 🔴 Day 6 | 🔴 Day 9 | **PERSISTS — unresolved 3 more days** |
+| P0 dashboard 404 | 🔴 Day ~133 | 🔴 Day ~136 | PERSISTS |
+| P0 voice box down | 🔴 Day ~104 | 🔴 Day ~107 | PERSISTS |
+| P1 dev-bypass-prod | ✅ RESOLVED | ✅ RESOLVED | Stable, no regression |
+| Worker health | ✅ GREEN | ✅ GREEN | No change |
+| Sandpack unit tests | ✅ 14/14 pass | ✅ 14/14 pass | No change |
+| Frontend TypeScript build | ✅ 0 errors | ✅ 0 errors | No change |
+| `.dev.vars` gitignore | ✅ GREEN | ✅ GREEN | Probe YELLOW clarified: confirmed correct |
+
+**Nothing new surfaced; nothing resolved.** The P1 key is on day 9 with no action taken — urgency is increasing.
+
+---
+
+## ⏭️ Skipped Checks (cloud creds absent — cover in local on-demand run)
+
+| Check | Missing cred | Impact |
 |---|---|---|
-| **RunPod pod-power** | `RUNPOD_API_KEY` not in cloud env | `curl -H "Authorization: Bearer $RUNPOD_API_KEY" https://rest.runpod.io/v1/pods/udcz4k7kse1zw6` |
-| **Vercel deploy-drift** | `VERCEL_TOKEN` not in cloud env | `vercel ls` / check Vercel dashboard — confirm HEAD `86e84ea` deployed |
-| **Worker auto-redeploy self-heal** | `CLOUDFLARE_API_KEY`+email not in cloud | Would re-run `selfheal.mjs` — not needed this run (worker is up) |
-| **Telegram notification** | No Telegram token in cloud | `notify_mario()` / `POST /api/share/phone` — local run sends it |
-| **Box `POST /api/connect` session test** | RunPod broker token in `.dev.vars` | Test HMAC-gated broker locally: confirm `connectUrl`+token returned |
-
----
-
-## How this was produced
-
-Tier-1 probe (`qa/audit/audit-probe.mjs --json`) → 6 parallel domain agents → this synthesis.
-Probe JSON: `qa/audit/reports/latest-probe.json`.
-Probe overall: RED (1 RED/security P1 + 9 YELLOW/cloud-cred limits + 7 GREEN).
+| RunPod pod power state | `RUNPOD_API_KEY` | Can't auto-restart voice box |
+| Vercel deploy drift | `VERCEL_TOKEN` | Can't confirm latest master is deployed |
+| Worker self-heal redeploy | `CLOUDFLARE_API_KEY` | N/A (worker healthy) |
+| Telegram summary | Bot token | GitHub issue + email used instead |
+| Build engine E2E | Clerk JWT (auth hardened) | Last confirmed OK Oct 19 |
+| TAVILY web_search live test | Clerk JWT | Unconfirmed for weeks |
